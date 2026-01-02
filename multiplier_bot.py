@@ -618,6 +618,7 @@ class DerivMultiplierBot:
             
             if not self.symbol_available:
                 if not await self.validate_symbol():
+                    trade_logger.error("❌ Symbol does not support multipliers - skipping trade")
                     return None, "Symbol validation failed"
             
             can_enter, vol, trend, reason = await self.wait_for_entry_signal()
