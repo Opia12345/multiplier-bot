@@ -577,20 +577,37 @@ class DerivMultiplierBot:
             response = await self.send_request(spec_request)
             
             if not response or "error" in response:
-                trade_logger.error(f"Symbol validation failed for {self.symbol}")
+                trade_logger.error(f"contracts_for failed for {self.symbol}: {response.get('error') if response else 'No response'}")
                 return False
             
-            if "contracts_for" in response:
-                contracts = response["contracts_for"].get("available", [])
-                has_multiplier = any(c.get("contract_category") == "multipliers" for c in contracts)
-                if has_multiplier:
-                    self.symbol_available = True
-                    trade_logger.info(f"Symbol {self.symbol} validated successfully")
-                    return True
+            if "contracts_for" not in response:
+                trade_logger.error(f"No contracts_for data in response for {self.symbol}: {response}")
+                return False
+            
+            available = response["contracts_for"].get("available", [])
+            trade_logger.info(f"Found {len(available)} contracts for {self.symbol}")
+            
+            # Debug: Log contract types
+            contract_types = [c.get("contract_type") for c in available]
+            trade_logger.info(f"Available contract types: {contract_types}")
+            
+            # Correct check: Look for MULTUP/MULTDOWN or "multiplier"
+            has_multiplier = any(
+                c.get("contract_type") in ["MULTUP", "MULTDOWN", "multiplier"] 
+                for c in available
+            )
+            
+            if has_multiplier:
+                self.symbol_available = True
+                trade_logger.info(f"✅ {self.symbol} supports multipliers")
+                return True
+            else:
+                trade_logger.warning(f"❌ No multiplier contracts found for {self.symbol}")
+                return False
+                
         except Exception as e:
-            trade_logger.error(f"Symbol validation exception: {e}")
-        return False
-    
+            trade_logger.error(f"Exception in validate_symbol: {e}")
+            return False    
     async def send_request(self, request):
         req_id = self.get_next_request_id()
         request["req_id"] = req_id
