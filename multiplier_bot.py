@@ -15,7 +15,6 @@ from logging.handlers import RotatingFileHandler
 import math
 import numpy as np
 import pandas as pd
-from talib import EMA, ATR  # Assuming talib is installed; for EMA and ATR calculations
 
 # === LOGGING CONFIGURATION ===
 LOG_DIR = os.environ.get('LOG_DIR', 'logs')
@@ -272,7 +271,7 @@ class VolatilityAnalyzer:
     @staticmethod
     def calculate_standard_deviation(values):
         if len(values) < 2:
-            return 0
+            return 0.0
         mean = sum(values) / len(values)
         variance = sum((x - mean) ** 2 for x in values) / len(values)
         return math.sqrt(variance)
@@ -280,31 +279,34 @@ class VolatilityAnalyzer:
     @staticmethod
     def calculate_atr(prices, period=14):
         if len(prices) < period + 1:
-            return 0
-        high_low = np.array(prices[1:]) - np.array(prices[:-1])
-        true_ranges = np.abs(high_low)
-        return np.mean(true_ranges[-period:])
+            return 0.0
+        high_low = [abs(prices[i] - prices[i-1]) for i in range(1, len(prices))]
+        return sum(high_low[-period:]) / period if high_low else 0.0
     
     @staticmethod
     def calculate_ema(prices, period=20):
-        prices_df = pd.Series(prices)
-        return prices_df.ewm(span=period, adjust=False).mean().iloc[-1]
+        prices_series = pd.Series(prices)
+        return prices_series.ewm(span=period, adjust=False).mean().iloc[-1]
     
     @staticmethod
     def detect_trend(prices, ema_period=20):
+        if len(prices) < ema_period:
+            return "neutral"
         ema = VolatilityAnalyzer.calculate_ema(prices, ema_period)
         current_price = prices[-1]
-        if current_price > ema:
+        if current_price > ema * 1.0005:  # Small buffer to avoid noise
             return "up"
-        elif current_price < ema:
+        elif current_price < ema * 0.9995:
             return "down"
         return "neutral"
     
     @staticmethod
-    def is_low_volatility(prices, threshold=0.15):
-        pct_vol = VolatilityAnalyzer.calculate_standard_deviation(prices[-20:]) / np.mean(prices[-20:]) * 100
+    def is_low_volatility(prices, threshold=0.20):
+        if len(prices) < 20:
+            return False, 0.0
+        recent = prices[-20:]
+        pct_vol = (VolatilityAnalyzer.calculate_standard_deviation(recent) / sum(recent) * len(recent)) * 100
         return pct_vol < threshold, pct_vol
-
 class EnhancedSafetyChecks:
     @staticmethod
     def is_safe_entry(volatility_pct, atr, max_vol=0.20, max_atr=0.05):

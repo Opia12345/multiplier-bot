@@ -3,4 +3,3 @@ websockets
 gunicorn
 numpy
 pandas
-talib
