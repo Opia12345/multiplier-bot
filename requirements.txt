@@ -1,0 +1,7 @@
+flask
+websockets
+gunicorn
+sqlite3
+numpy
+pandas
+talib
