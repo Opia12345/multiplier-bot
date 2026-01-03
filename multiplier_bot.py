@@ -665,7 +665,7 @@ class DerivMultiplierBot:
 
             # Optional: Ensure they don't exceed stake
             stop_loss_amount = min(stop_loss_amount, stake * 0.9)  # Max 90% of stake
-            take_profit_amount = max(take_profit_amount, stake * 0.5)  # Min 50% profit target
+            # take_profit_amount = max(take_profit_amount, stake * 0.5)  # Min 50% profit target
 
             trade_logger.info(f"Using SL: -${stop_loss_amount:.2f}, TP: +${take_profit_amount:.2f}")
             
