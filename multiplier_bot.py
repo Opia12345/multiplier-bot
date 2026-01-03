@@ -335,8 +335,8 @@ class DerivMultiplierBot:
         self.max_consecutive_losses = parameters.get('max_consecutive_losses', 2)
         self.daily_loss_limit_pct = parameters.get('daily_loss_limit_pct', 0.03)
         
-        self.volatility_threshold = parameters.get('volatility_threshold', 0.35)
-        self.atr_threshold = parameters.get('atr_threshold', 0.09)
+        self.volatility_threshold = parameters.get('volatility_threshold', 0.60)
+        self.atr_threshold = parameters.get('atr_threshold', 0.15)
         
         self.current_direction = None
         self.volatility = None
