@@ -328,9 +328,10 @@ class DerivMultiplierBot:
         self.risk_per_trade_pct = parameters.get('risk_per_trade_pct', 0.01)
         self.ema_period = parameters.get('ema_period', 15)
         self.atr_period = parameters.get('atr_period', 14)
-        self.stop_loss_multiplier = parameters.get('stop_loss_multiplier', 1.8)
-        self.take_profit_multiplier = parameters.get('take_profit_multiplier', 3.5)
-        
+        # self.stop_loss_multiplier = parameters.get('stop_loss_multiplier', 1.8)
+        # self.take_profit_multiplier = parameters.get('take_profit_multiplier', 3.5)
+        self.stop_loss_amount = parameters.get('stop_loss_amount', 2.0)
+        self.take_profit_amount = parameters.get('take_profit_amount', 10.0)
         self.max_daily_trades = parameters.get('max_daily_trades', 8)
         self.max_consecutive_losses = parameters.get('max_consecutive_losses', 2)
         self.daily_loss_limit_pct = parameters.get('daily_loss_limit_pct', 0.03)
@@ -658,9 +659,15 @@ class DerivMultiplierBot:
             risk_amount = balance * self.risk_per_trade_pct
             stake = min(self.stake_per_trade, risk_amount)
             
-            # CORRECT: Use absolute USD amounts for stop_loss and take_profit
-            stop_loss_amount = round(stake * 0.5, 2)      # Max 50% of stake as loss (adjustable)
-            take_profit_amount = round(stake * 2.0, 2)    # Target 2x stake profit (adjustable)
+# Use absolute USD amounts from payload (configurable)
+            stop_loss_amount = self.stop_loss_amount
+            take_profit_amount = self.take_profit_amount
+
+            # Optional: Ensure they don't exceed stake
+            stop_loss_amount = min(stop_loss_amount, stake * 0.9)  # Max 90% of stake
+            take_profit_amount = max(take_profit_amount, stake * 0.5)  # Min 50% profit target
+
+            trade_logger.info(f"Using SL: -${stop_loss_amount:.2f}, TP: +${take_profit_amount:.2f}")
             
             trade_logger.info("STEP 3/3: Final safety check...")
             is_safe = EnhancedSafetyChecks.is_safe_entry(vol, self.atr, self.volatility_threshold, self.atr_threshold)
@@ -680,8 +687,8 @@ class DerivMultiplierBot:
                 "symbol": self.symbol,
                 "multiplier": self.effective_multiplier,
                 "limit_order": {
-                    "stop_loss": stop_loss_amount,      # ← Plain number (USD loss)
-                    "take_profit": take_profit_amount   # ← Plain number (USD profit)
+                    "stop_loss": stop_loss_amount,      # Plain number
+                    "take_profit": take_profit_amount   # Plain number
                 }
             }
             
@@ -926,13 +933,17 @@ def execute_trade(app_id, api_token):
             'risk_per_trade_pct': float(data.get('risk_per_trade_pct', 0.01)),
             'ema_period': int(data.get('ema_period', 15)),
             'atr_period': int(data.get('atr_period', 14)),
-            'stop_loss_multiplier': float(data.get('stop_loss_multiplier', 1.8)),
-            'take_profit_multiplier': float(data.get('take_profit_multiplier', 3.5)),
+            # 'stop_loss_multiplier': float(data.get('stop_loss_multiplier', 1.8)),
+            # 'take_profit_multiplier': float(data.get('take_profit_multiplier', 3.5)),
             'max_daily_trades': int(data.get('max_daily_trades', 8)),
             'max_consecutive_losses': int(data.get('max_consecutive_losses', 2)),
             'daily_loss_limit_pct': float(data.get('daily_loss_limit_pct', 0.03)),
-            'volatility_threshold': float(data.get('volatility_threshold', 0.35)),
-            'atr_threshold': float(data.get('atr_threshold', 0.09))
+            'volatility_threshold': float(data.get('volatility_threshold', 0.60)),
+            'atr_threshold': float(data.get('atr_threshold', 0.15)),
+
+            # NEW: Absolute USD stop loss and take profit
+            'stop_loss_amount': float(data.get('stop_loss_amount', 2.0)),
+            'take_profit_amount': float(data.get('take_profit_amount', 10.0))
         }
         
         new_trade_id = str(uuid.uuid4())
