@@ -15,6 +15,7 @@ from logging.handlers import RotatingFileHandler
 import math
 import numpy as np
 import pandas as pd
+import random  # Added for fallback direction
 
 # === LOGGING CONFIGURATION ===
 LOG_DIR = os.environ.get('LOG_DIR', 'logs')
@@ -296,9 +297,9 @@ class VolatilityAnalyzer:
             return "neutral"
         ema = VolatilityAnalyzer.calculate_ema(prices, ema_period)
         current_price = prices[-1]
-        if current_price > ema * 1.0005:
+        if current_price > ema:
             return "up"
-        elif current_price < ema * 0.9995:
+        elif current_price < ema:
             return "down"
         return "neutral"
     
@@ -323,24 +324,25 @@ class DerivMultiplierBot:
         self.trade_id = trade_id
         self.stake_per_trade = parameters.get('stake', 10.0)
         self.symbol = parameters.get('symbol', 'R_100')
-        self.multiplier = parameters.get('multiplier', 20)
+        self.multiplier = parameters.get('multiplier', 50)
         self.risk_per_trade_pct = parameters.get('risk_per_trade_pct', 0.01)
-        self.ema_period = parameters.get('ema_period', 20)
+        self.ema_period = parameters.get('ema_period', 15)
         self.atr_period = parameters.get('atr_period', 14)
-        self.stop_loss_multiplier = parameters.get('stop_loss_multiplier', 1.5)
-        self.take_profit_multiplier = parameters.get('take_profit_multiplier', 3.0)
+        self.stop_loss_multiplier = parameters.get('stop_loss_multiplier', 1.8)
+        self.take_profit_multiplier = parameters.get('take_profit_multiplier', 3.5)
         
-        self.max_daily_trades = parameters.get('max_daily_trades', 5)
+        self.max_daily_trades = parameters.get('max_daily_trades', 8)
         self.max_consecutive_losses = parameters.get('max_consecutive_losses', 2)
-        self.daily_loss_limit_pct = parameters.get('daily_loss_limit_pct', 0.02)
+        self.daily_loss_limit_pct = parameters.get('daily_loss_limit_pct', 0.03)
         
-        self.volatility_threshold = parameters.get('volatility_threshold', 0.20)
-        self.atr_threshold = parameters.get('atr_threshold', 0.05)
+        self.volatility_threshold = parameters.get('volatility_threshold', 0.35)
+        self.atr_threshold = parameters.get('atr_threshold', 0.09)
         
         self.current_direction = None
         self.volatility = None
         self.atr = None
         self.ema = None
+        self.effective_multiplier = None  # To store actual multiplier used
         
         self.ws_urls = [
             f"wss://ws.derivws.com/websockets/v3?app_id={app_id}",
@@ -359,7 +361,7 @@ class DerivMultiplierBot:
         self.entry_price = None
         self.exit_price = None
         
-        trade_logger.info(f"Bot initialized - Trade ID: {trade_id}, Symbol: {self.symbol}, Multiplier: {self.multiplier}")
+        trade_logger.info(f"Bot initialized - Trade ID: {trade_id}, Symbol: {self.symbol}, Base Multiplier: {self.multiplier}")
         
     def get_next_request_id(self):
         self.request_id += 1
@@ -478,7 +480,7 @@ class DerivMultiplierBot:
             trade_logger.error(f"Exception in analyze_ticks: {e}")
             return None, None, None, None, None
     
-    async def wait_for_entry_signal(self, max_wait_time=30, check_interval=1):
+    async def wait_for_entry_signal(self, max_wait_time=90, check_interval=1):
         trade_logger.info("🔍 STEP 1/3: Waiting for entry signal...")
         start_time = datetime.now()
         while (datetime.now() - start_time).total_seconds() < max_wait_time:
@@ -495,8 +497,18 @@ class DerivMultiplierBot:
                 self.atr = atr
                 self.ema = ema
                 self.current_direction = "MULTUP" if trend == "up" else "MULTDOWN"
-                trade_logger.info(f"✅ ENTRY SIGNAL FOUND - Direction: {trend.upper()}, Vol: {pct_vol:.4f}%")
-                return True, pct_vol, trend, "Signal approved"
+                self.effective_multiplier = self.multiplier
+                trade_logger.info(f"✅ ENTRY SIGNAL FOUND - Direction: {trend.upper()}, Vol: {pct_vol:.4f}%, Multiplier: {self.effective_multiplier}")
+                return True, pct_vol, trend, "Signal approved", self.effective_multiplier
+                
+            elif is_safe and trend == "neutral":
+                self.volatility = pct_vol
+                self.atr = atr
+                self.ema = ema
+                self.current_direction = random.choice(["MULTUP", "MULTDOWN"])
+                self.effective_multiplier = self.multiplier // 2
+                trade_logger.info(f"🔶 FALLBACK ENTRY (neutral) - {self.current_direction}, Multiplier: {self.effective_multiplier}")
+                return True, pct_vol, "neutral", "Fallback neutral entry", self.effective_multiplier
             else:
                 if not is_safe:
                     trade_logger.debug(f"⏳ Waiting - High volatility/ATR ({pct_vol:.4f}% / {atr:.6f})")
@@ -506,7 +518,7 @@ class DerivMultiplierBot:
             await asyncio.sleep(check_interval)
         
         trade_logger.info("⏰ Max wait time reached - no valid entry signal")
-        return False, None, None, "Timeout: No safe entry signal"
+        return False, None, None, "Timeout: No safe entry signal", None
     
     async def check_trading_conditions(self):
         today = datetime.now().date().isoformat()
@@ -587,13 +599,11 @@ class DerivMultiplierBot:
             available = response["contracts_for"].get("available", [])
             trade_logger.info(f"Found {len(available)} contracts for {self.symbol}")
             
-            # Debug: Log contract types
             contract_types = [c.get("contract_type") for c in available]
             trade_logger.info(f"Available contract types: {contract_types}")
             
-            # Correct check: Look for MULTUP/MULTDOWN or "multiplier"
             has_multiplier = any(
-                c.get("contract_type") in ["MULTUP", "MULTDOWN", "multiplier"] 
+                c.get("contract_type") in ["MULTUP", "MULTDOWN"] 
                 for c in available
             )
             
@@ -607,7 +617,8 @@ class DerivMultiplierBot:
                 
         except Exception as e:
             trade_logger.error(f"Exception in validate_symbol: {e}")
-            return False    
+            return False
+    
     async def send_request(self, request):
         req_id = self.get_next_request_id()
         request["req_id"] = req_id
@@ -638,7 +649,7 @@ class DerivMultiplierBot:
                     trade_logger.error("❌ Symbol does not support multipliers - skipping trade")
                     return None, "Symbol validation failed"
             
-            can_enter, vol, trend, reason = await self.wait_for_entry_signal()
+            can_enter, vol, trend, reason, effective_multiplier = await self.wait_for_entry_signal()
             if not can_enter:
                 trade_logger.info(f"🚫 SKIP: {reason}")
                 return None, reason
@@ -656,7 +667,8 @@ class DerivMultiplierBot:
                 trade_logger.warning("⚠️ Final safety check failed - aborting")
                 return None, "Final safety check failed"
             
-            trade_logger.info(f"✅ All checks passed - placing {self.current_direction} trade")
+            self.effective_multiplier = effective_multiplier or self.multiplier
+            trade_logger.info(f"✅ All checks passed - placing {self.current_direction} trade with multiplier {self.effective_multiplier}")
             
             proposal_request = {
                 "proposal": 1,
@@ -665,7 +677,7 @@ class DerivMultiplierBot:
                 "contract_type": self.current_direction,
                 "currency": "USD",
                 "symbol": self.symbol,
-                "multiplier": self.multiplier,
+                "multiplier": self.effective_multiplier,
                 "limit_order": {
                     "stop_loss": {"value": stop_loss},
                     "take_profit": {"value": take_profit}
@@ -689,14 +701,14 @@ class DerivMultiplierBot:
             
             contract_id = buy_response["buy"]["contract_id"]
             self.entry_price = float(buy_response["buy"]["buy_price"])
-            trade_logger.info(f"✅ TRADE PLACED - Contract: {contract_id}, Stake: ${stake:.2f}")
+            trade_logger.info(f"✅ TRADE PLACED - Contract: {contract_id}, Stake: ${stake:.2f}, Multiplier: {self.effective_multiplier}")
             
             return contract_id, None
             
         except Exception as e:
             trade_logger.error(f"❌ Exception in place_multiplier_trade: {e}")
-            return None, str(e)
-    
+            return None, str(e)    
+        
     async def monitor_contract(self, contract_id):
         try:
             self.trade_start_time = datetime.now()
@@ -836,7 +848,7 @@ class DerivMultiplierBot:
                 "app_id": self.app_id,
                 "volatility": self.volatility,
                 "direction": self.current_direction,
-                "multiplier": self.multiplier,
+                "multiplier": self.effective_multiplier or self.multiplier,
                 "entry_price": monitor_result.get("entry_price"),
                 "exit_price": monitor_result.get("exit_price"),
                 "exit_reason": monitor_result.get("exit_reason"),
@@ -846,7 +858,7 @@ class DerivMultiplierBot:
                 "parameters": {
                     'stake': self.stake_per_trade,
                     'symbol': self.symbol,
-                    'multiplier': self.multiplier
+                    'multiplier': self.effective_multiplier or self.multiplier
                 }
             }
             save_trade(self.trade_id, result)
@@ -905,17 +917,17 @@ def execute_trade(app_id, api_token):
         parameters = {
             'stake': float(data.get('stake', 10.0)),
             'symbol': data.get('symbol', 'R_100'),
-            'multiplier': int(data.get('multiplier', 20)),
+            'multiplier': int(data.get('multiplier', 50)),
             'risk_per_trade_pct': float(data.get('risk_per_trade_pct', 0.01)),
-            'ema_period': int(data.get('ema_period', 20)),
+            'ema_period': int(data.get('ema_period', 15)),
             'atr_period': int(data.get('atr_period', 14)),
-            'stop_loss_multiplier': float(data.get('stop_loss_multiplier', 1.5)),
-            'take_profit_multiplier': float(data.get('take_profit_multiplier', 3.0)),
-            'max_daily_trades': int(data.get('max_daily_trades', 5)),
+            'stop_loss_multiplier': float(data.get('stop_loss_multiplier', 1.8)),
+            'take_profit_multiplier': float(data.get('take_profit_multiplier', 3.5)),
+            'max_daily_trades': int(data.get('max_daily_trades', 8)),
             'max_consecutive_losses': int(data.get('max_consecutive_losses', 2)),
-            'daily_loss_limit_pct': float(data.get('daily_loss_limit_pct', 0.02)),
-            'volatility_threshold': float(data.get('volatility_threshold', 0.20)),
-            'atr_threshold': float(data.get('atr_threshold', 0.05))
+            'daily_loss_limit_pct': float(data.get('daily_loss_limit_pct', 0.03)),
+            'volatility_threshold': float(data.get('volatility_threshold', 0.35)),
+            'atr_threshold': float(data.get('atr_threshold', 0.09))
         }
         
         new_trade_id = str(uuid.uuid4())
@@ -1025,6 +1037,7 @@ def get_all_trades_endpoint():
     wins = [t for t in completed if t.get('profit', 0) > 0]
     losses = [t for t in completed if t.get('profit', 0) <= 0]
     total_profit = sum(t.get('profit', 0) for t in completed)
+    avg_profit = total_profit / len(completed) if completed else 0.0
     
     trades_dict = {t['trade_id']: dict(t) for t in filtered_trades}
     
@@ -1040,6 +1053,7 @@ def get_all_trades_endpoint():
         "losses": len(losses),
         "win_rate": win_rate,
         "total_profit_loss": round(total_profit, 2),
+        "avg_profit": round(avg_profit, 2),
         "trades": trades_dict
     }), 200
 
@@ -1047,7 +1061,7 @@ def get_all_trades_endpoint():
 def health_check():
     return jsonify({
         "status": "healthy",
-        "service": "Deriv Multiplier Bot v1.1 - Improved Logging & Reliability",
+        "service": "Deriv Multiplier Bot v1.2 - Final Optimized Version",
         "timestamp": datetime.now().isoformat(),
         "active_trades": active_trade_count,
         "max_concurrent": MAX_CONCURRENT_TRADES,
@@ -1057,7 +1071,9 @@ def health_check():
             "Enhanced logging for entry decisions",
             "Robust tick fetching with fallbacks",
             "Clear skip vs place distinction",
-            "24/7 ready with auto-reconnect"
+            "Fallback neutral entries with reduced multiplier",
+            "Accurate multiplier tracking",
+            "Improved dashboard with avg profit"
         ]
     }), 200
 
@@ -1067,22 +1083,22 @@ def get_optimal_config():
         "recommended_setup": {
             "description": "Safe trend-following multipliers on volatility indices",
             "parameters": {
-                "stake": 10.0,
+                "stake": 1.0,
                 "symbol": "R_100",
-                "multiplier": 20,
+                "multiplier": 500,
                 "risk_per_trade_pct": 0.01,
-                "ema_period": 20,
+                "ema_period": 15,
                 "atr_period": 14,
-                "stop_loss_multiplier": 1.5,
-                "take_profit_multiplier": 3.0,
-                "volatility_threshold": 0.25,
-                "atr_threshold": 0.06
+                "stop_loss_multiplier": 1.8,
+                "take_profit_multiplier": 3.5,
+                "volatility_threshold": 0.35,
+                "atr_threshold": 0.09
             },
             "notes": [
-                "Relaxed thresholds for more entries",
-                "Use R_100 or 1HZ100V for steady trends",
-                "Cron every 10-15 minutes",
-                "Monitor dashboard for signal frequency"
+                "High multiplier for max profit",
+                "Relaxed thresholds for entries",
+                "Fallback neutral entries with halved multiplier",
+                "Cron every 10-15 minutes"
             ]
         }
     }), 200
@@ -1106,13 +1122,14 @@ def dashboard():
         .running { background: rgba(59, 130, 246, 0.1); color: #3b82f6; animation: pulse 2s infinite; }
         .skipped { background: rgba(251, 191, 36, 0.1); color: #f59e0b; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     </style>
 </head>
 <body class="p-6">
-    <div class="max-w-6xl mx-auto">
+    <div class="max-w-7xl mx-auto">
         <header class="flex justify-between items-center mb-8 border-b border-slate-800 pb-6">
             <div>
-                <h1 class="text-xl font-bold">MULTIPLIER BOT <span class="text-blue-500 text-xs">v1.1</span></h1>
+                <h1 class="text-xl font-bold">MULTIPLIER BOT <span class="text-blue-500 text-xs">v1.2 FINAL</span></h1>
                 <p id="sync-status" class="text-slate-500 text-xs mt-1 italic">Last update: --:--:--</p>
             </div>
             <div class="text-right">
@@ -1120,22 +1137,26 @@ def dashboard():
                 <h2 id="session-pl" class="text-2xl font-bold">$0.00</h2>
             </div>
         </header>
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
             <div class="glass p-5 rounded-xl">
                 <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Total Attempts</p>
                 <p id="stat-total" class="text-xl font-bold">0</p>
+            </div>
+            <div class="glass p-5 rounded-xl">
+                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Completed</p>
+                <p id="stat-completed" class="text-xl font-bold">0</p>
             </div>
             <div class="glass p-5 rounded-xl">
                 <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Win Rate</p>
                 <p id="stat-winrate" class="text-xl font-bold">0%</p>
             </div>
             <div class="glass p-5 rounded-xl">
-                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Skipped</p>
-                <p id="stat-skipped" class="text-xl font-bold text-amber-500">0</p>
+                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Avg Profit</p>
+                <p id="stat-avgprofit" class="text-xl font-bold">$0.00</p>
             </div>
             <div class="glass p-5 rounded-xl">
-                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Status</p>
-                <p id="safety-label" class="text-xl font-bold text-emerald-500">Running</p>
+                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Skipped</p>
+                <p id="stat-skipped" class="text-xl font-bold text-amber-500">0</p>
             </div>
         </div>
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1165,6 +1186,11 @@ def dashboard():
                         <p class="text-slate-600 italic">No skips recorded yet.</p>
                     </div>
                 </div>
+                <div class="glass p-6 rounded-xl">
+                    <h3 class="text-emerald-500 text-xs font-bold uppercase mb-4">Performance</h3>
+                    <p id="total-profit" class="text-xl font-bold">$0.00</p>
+                    <p class="text-slate-500 text-xs mt-2">Total P/L</p>
+                </div>
             </div>
         </div>
     </div>
@@ -1179,10 +1205,13 @@ def dashboard():
                 const session = await sessionRes.json();
                 
                 document.getElementById('stat-total').innerText = tradesData.total_trades;
+                document.getElementById('stat-completed').innerText = tradesData.completed_trades;
                 document.getElementById('stat-skipped').innerText = tradesData.skipped_trades;
                 document.getElementById('stat-winrate').innerText = tradesData.win_rate;
+                document.getElementById('stat-avgprofit').innerText = `$${tradesData.avg_profit}`;
                 document.getElementById('session-pl').innerText = `$${tradesData.total_profit_loss}`;
                 document.getElementById('session-pl').className = `text-2xl font-bold ${tradesData.total_profit_loss >= 0 ? 'text-emerald-500' : 'text-red-500'}`;
+                document.getElementById('total-profit').innerText = `$${tradesData.total_profit_loss}`;
                 document.getElementById('sync-status').innerText = `Last update: ${new Date().toLocaleTimeString()}`;
                 
                 const tbody = document.getElementById('trade-body');
@@ -1227,8 +1256,8 @@ def dashboard():
 
 if __name__ == '__main__':
     logger.info("=" * 60)
-    logger.info("Starting Deriv Multiplier Bot v1.1 - Enhanced Logging & Reliability")
-    logger.info("Trend-following strategy with EMA + ATR on volatility indices")
+    logger.info("Starting Deriv Multiplier Bot v1.2 - Final Optimized Version")
+    logger.info("Safe trend-following with fallback entries and high multiplier")
     logger.info("=" * 60)
     
     port = int(os.environ.get('PORT', 5000))
