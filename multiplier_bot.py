@@ -641,34 +641,35 @@ class DerivMultiplierBot:
         try:
             balance = await self.get_balance()
             if balance < self.stake_per_trade:
-                trade_logger.error(f"❌ Insufficient balance: ${balance:.2f}")
+                trade_logger.error(f"Insufficient balance: ${balance:.2f}")
                 return None, "Insufficient balance"
             
             if not self.symbol_available:
                 if not await self.validate_symbol():
-                    trade_logger.error("❌ Symbol does not support multipliers - skipping trade")
+                    trade_logger.error("Symbol does not support multipliers - skipping trade")
                     return None, "Symbol validation failed"
             
             can_enter, vol, trend, reason, effective_multiplier = await self.wait_for_entry_signal()
             if not can_enter:
-                trade_logger.info(f"🚫 SKIP: {reason}")
+                trade_logger.info(f"SKIP: {reason}")
                 return None, reason
             
-            trade_logger.info("🔍 STEP 2/3: Calculating risk...")
+            trade_logger.info("STEP 2/3: Calculating risk...")
             risk_amount = balance * self.risk_per_trade_pct
             stake = min(self.stake_per_trade, risk_amount)
             
-            stop_loss = self.atr * self.stop_loss_multiplier
-            take_profit = self.atr * self.take_profit_multiplier
+            # CORRECT: Use absolute USD amounts for stop_loss and take_profit
+            stop_loss_amount = round(stake * 0.5, 2)      # Max 50% of stake as loss (adjustable)
+            take_profit_amount = round(stake * 2.0, 2)    # Target 2x stake profit (adjustable)
             
-            trade_logger.info("🔍 STEP 3/3: Final safety check...")
+            trade_logger.info("STEP 3/3: Final safety check...")
             is_safe = EnhancedSafetyChecks.is_safe_entry(vol, self.atr, self.volatility_threshold, self.atr_threshold)
             if not is_safe:
-                trade_logger.warning("⚠️ Final safety check failed - aborting")
+                trade_logger.warning("Final safety check failed - aborting")
                 return None, "Final safety check failed"
             
             self.effective_multiplier = effective_multiplier or self.multiplier
-            trade_logger.info(f"✅ All checks passed - placing {self.current_direction} trade with multiplier {self.effective_multiplier}")
+            trade_logger.info(f"All checks passed - placing {self.current_direction} trade with multiplier {self.effective_multiplier}")
             
             proposal_request = {
                 "proposal": 1,
@@ -679,14 +680,15 @@ class DerivMultiplierBot:
                 "symbol": self.symbol,
                 "multiplier": self.effective_multiplier,
                 "limit_order": {
-                    "stop_loss": {"value": stop_loss},
-                    "take_profit": {"value": take_profit}
+                    "stop_loss": stop_loss_amount,      # ← Plain number (USD loss)
+                    "take_profit": take_profit_amount   # ← Plain number (USD profit)
                 }
             }
             
             proposal_response = await self.send_request(proposal_request)
             if not proposal_response or "error" in proposal_response:
-                trade_logger.error(f"❌ Proposal failed: {proposal_response.get('error') if proposal_response else 'None'}")
+                error_msg = proposal_response.get('error', {}).get('message', 'Unknown error') if proposal_response else 'No response'
+                trade_logger.error(f"Proposal failed: {error_msg}")
                 return None, "Proposal failed"
             
             proposal_id = proposal_response["proposal"]["id"]
@@ -696,19 +698,22 @@ class DerivMultiplierBot:
             buy_response = await self.send_request(buy_request)
             
             if not buy_response or "error" in buy_response:
-                trade_logger.error(f"❌ Buy failed: {buy_response.get('error') if buy_response else 'None'}")
+                error_msg = buy_response.get('error', {}).get('message', 'Unknown error') if buy_response else 'No response'
+                trade_logger.error(f"Buy failed: {error_msg}")
                 return None, "Buy failed"
             
             contract_id = buy_response["buy"]["contract_id"]
             self.entry_price = float(buy_response["buy"]["buy_price"])
-            trade_logger.info(f"✅ TRADE PLACED - Contract: {contract_id}, Stake: ${stake:.2f}, Multiplier: {self.effective_multiplier}")
+            trade_logger.info(f"TRADE PLACED - Contract: {contract_id}, Stake: ${stake:.2f}, "
+                             f"SL: -${stop_loss_amount}, TP: +${take_profit_amount}, "
+                             f"Multiplier: {self.effective_multiplier}")
             
             return contract_id, None
             
         except Exception as e:
-            trade_logger.error(f"❌ Exception in place_multiplier_trade: {e}")
-            return None, str(e)    
-        
+            trade_logger.error(f"Exception in place_multiplier_trade: {e}")
+            return None, str(e)
+               
     async def monitor_contract(self, contract_id):
         try:
             self.trade_start_time = datetime.now()
