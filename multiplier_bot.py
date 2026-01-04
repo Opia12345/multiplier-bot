@@ -247,7 +247,7 @@ except Exception as e:
     logger.error(f"Database initialization error: {e}")
 
 trade_results = {}
-MAX_CONCURRENT_TRADES = 2
+MAX_CONCURRENT_TRADES = 100
 active_trades_lock = Lock()
 active_trade_count = 0
 
@@ -560,12 +560,33 @@ class DerivMultiplierBot:
             update_session_data(today, 0, 0, 0.0, 0)
             return True, "New session"
         
-        if session['stopped']: return False, "Trading stopped"
-        if session['trades_count'] >= self.max_daily_trades: return False, "Max trades"
-        if session['consecutive_losses'] >= self.max_consecutive_losses: return False, "Max losses"
+        # Check if max daily trades reached
+        if session['trades_count'] >= self.max_daily_trades:
+            trade_logger.warning(f"Max daily trades reached: {session['trades_count']}/{self.max_daily_trades}")
+            return False, "Max trades reached"
+        
+        # Check if max consecutive losses reached
+        if session['consecutive_losses'] >= self.max_consecutive_losses:
+            trade_logger.warning(f"Max consecutive losses reached: {session['consecutive_losses']}/{self.max_consecutive_losses}")
+            # Auto-stop trading for safety
+            update_session_data(today, session['trades_count'], session['consecutive_losses'], 
+                            session['total_profit_loss'], 1)
+            return False, "Max consecutive losses - auto-stopped"
+        
+        # Check if daily loss limit reached
+        if session['total_profit_loss'] <= -(self.initial_balance * self.daily_loss_limit_pct):
+            trade_logger.warning(f"Daily loss limit reached: {session['total_profit_loss']}")
+            update_session_data(today, session['trades_count'], session['consecutive_losses'], 
+                            session['total_profit_loss'], 1)
+            return False, "Daily loss limit reached"
+        
+        # If manually stopped, respect that
+        if session['stopped'] == 1:
+            trade_logger.warning("Trading manually stopped")
+            return False, "Trading stopped"
         
         return True, "OK"
-
+    
     async def place_multiplier_trade(self):
         can_enter, reason = await self.wait_for_entry_signal()
         if not can_enter: return None, reason
@@ -666,14 +687,82 @@ class DerivMultiplierBot:
             if self.ws: await self.ws.close()
             gc.collect()
 
-    def update_session_after_trade(self, profit):
-        today = datetime.now().date().isoformat()
-        session = get_session_data(today) or {'trades_count': 0, 'consecutive_losses': 0, 'total_profit_loss': 0.0, 'stopped': 0}
-        new_consecutive = 0 if profit > 0 else session['consecutive_losses'] + 1
-        update_session_data(today, session['trades_count'] + 1, new_consecutive, session['total_profit_loss'] + profit, 0)
+def update_session_after_trade(self, profit):
+    today = datetime.now().date().isoformat()
+    session = get_session_data(today)
+    
+    if not session:
+        session = {'trades_count': 0, 'consecutive_losses': 0, 'total_profit_loss': 0.0, 'stopped': 0}
+    
+    # Update consecutive losses
+    if profit > 0:
+        new_consecutive = 0  # Reset on win
+    else:
+        new_consecutive = session['consecutive_losses'] + 1
+    
+    # Update session data
+    new_trades_count = session['trades_count'] + 1
+    new_total_pl = session['total_profit_loss'] + profit
+    
+    # Don't auto-stop here - let check_trading_conditions handle it on next trade
+    update_session_data(today, new_trades_count, new_consecutive, new_total_pl, 0)
+    
+    trade_logger.info(f"Session updated - Trades: {new_trades_count}, Consecutive losses: {new_consecutive}, P/L: ${new_total_pl:.2f}")
 
 # Flask app and endpoints
 app = Flask(__name__)
+
+@app.route('/session/resume', methods=['POST'])
+def resume_session():
+    """Resume trading after being stopped"""
+    today = datetime.now().date().isoformat()
+    session = get_session_data(today)
+    
+    if not session:
+        return jsonify({"success": False, "message": "No active session"}), 404
+    
+    # Resume by setting stopped to 0, but keep other data intact
+    update_session_data(today, session['trades_count'], session['consecutive_losses'], 
+                       session['total_profit_loss'], 0)
+    
+    return jsonify({"success": True, "message": "Trading resumed", "session": get_session_data(today)})
+
+@app.route('/session/status', methods=['GET'])
+def session_status():
+    """Get detailed session status"""
+    today = datetime.now().date().isoformat()
+    session = get_session_data(today)
+    
+    if not session:
+        return jsonify({
+            'session_date': today,
+            'trades_count': 0,
+            'consecutive_losses': 0,
+            'total_profit_loss': 0.0,
+            'stopped': 0,
+            'can_trade': True,
+            'reason': 'New session'
+        })
+    
+    # Determine if trading is allowed
+    can_trade = True
+    reason = "Trading allowed"
+    
+    if session['stopped']:
+        can_trade = False
+        reason = "Manually stopped"
+    elif session['trades_count'] >= 10:  # Use default, ideally pass from params
+        can_trade = False
+        reason = "Max daily trades reached"
+    elif session['consecutive_losses'] >= 2:  # Use default
+        can_trade = False
+        reason = "Max consecutive losses reached"
+    
+    return jsonify({
+        **session,
+        'can_trade': can_trade,
+        'reason': reason
+    })
 
 @app.route('/trade/<app_id>/<api_token>', methods=['POST'])
 def execute_trade(app_id, api_token):
