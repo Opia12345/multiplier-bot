@@ -15,7 +15,7 @@ from logging.handlers import RotatingFileHandler
 import math
 import numpy as np
 import pandas as pd
-import random  # Added for fallback direction
+import random
 
 # === LOGGING CONFIGURATION ===
 LOG_DIR = os.environ.get('LOG_DIR', 'logs')
@@ -79,7 +79,9 @@ def init_db():
                 exit_reason TEXT,
                 duration_seconds REAL,
                 atr REAL,
-                ema REAL
+                ema REAL,
+                rsi REAL,
+                macd TEXT
             )
         ''')
         cursor.execute('''
@@ -158,8 +160,8 @@ def save_trade(trade_id, trade_data):
                     (trade_id, timestamp, app_id, status, success, contract_id, profit,
                      final_balance, initial_balance, error, parameters, volatility, direction,
                      multiplier, entry_price, exit_price, exit_reason, duration_seconds,
-                     atr, ema)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     atr, ema, rsi, macd)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     trade_id,
                     trade_data.get('timestamp'),
@@ -180,7 +182,9 @@ def save_trade(trade_id, trade_data):
                     trade_data.get('exit_reason'),
                     trade_data.get('duration_seconds'),
                     trade_data.get('atr'),
-                    trade_data.get('ema')
+                    trade_data.get('ema'),
+                    trade_data.get('rsi'),
+                    trade_data.get('macd')
                 ))
                 db_logger.debug(f"Trade {trade_id} saved successfully")
     except Exception as e:
@@ -270,6 +274,77 @@ def trade_completed():
     except Exception as e:
         logger.error(f"Error in trade_completed: {e}")
 
+class TechnicalIndicators:
+    @staticmethod
+    def calculate_sma(prices, period):
+        if len(prices) < period:
+            return None
+        return sum(prices[-period:]) / period
+
+    @staticmethod
+    def calculate_ema(prices, period):
+        if len(prices) < period:
+            return None
+        prices_series = pd.Series(prices)
+        return prices_series.ewm(span=period, adjust=False).mean().iloc[-1]
+
+    @staticmethod
+    def calculate_rsi(prices, period=14):
+        if len(prices) < period + 1:
+            return 50.0
+        deltas = np.diff(prices)
+        seed = deltas[:period+1]
+        up = seed[seed >= 0].sum() / period
+        down = -seed[seed < 0].sum() / period
+        rs = up / down if down != 0 else 100
+        rsi = np.zeros_like(prices)
+        rsi[:period] = 100. - 100. / (1. + rs)
+
+        for i in range(period, len(prices)):
+            delta = deltas[i-1]
+            if delta > 0:
+                upval = delta
+                downval = 0.
+            else:
+                upval = 0.
+                downval = -delta
+
+            up = (up * (period - 1) + upval) / period
+            down = (down * (period - 1) + downval) / period
+            rs = up / down if down != 0 else 100
+            rsi[i] = 100. - 100. / (1. + rs)
+        return rsi[-1]
+
+    @staticmethod
+    def calculate_macd(prices, slow=26, fast=12, signal=9):
+        if len(prices) < slow + signal:
+            return 0, 0, 0
+        df = pd.Series(prices)
+        exp1 = df.ewm(span=fast, adjust=False).mean()
+        exp2 = df.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        exp3 = macd.ewm(span=signal, adjust=False).mean()
+        histogram = macd - exp3
+        return macd.iloc[-1], exp3.iloc[-1], histogram.iloc[-1]
+
+    @staticmethod
+    def calculate_bollinger_bands(prices, period=20, std_dev=2):
+        if len(prices) < period:
+            return None, None, None
+        sma = sum(prices[-period:]) / period
+        variance = sum((x - sma) ** 2 for x in prices[-period:]) / period
+        std = math.sqrt(variance)
+        upper = sma + (std * std_dev)
+        lower = sma - (std * std_dev)
+        return upper, sma, lower
+
+    @staticmethod
+    def calculate_atr(prices, period=14):
+        if len(prices) < period + 1:
+            return 0.0
+        high_low = [abs(prices[i] - prices[i-1]) for i in range(1, len(prices))]
+        return sum(high_low[-period:]) / period if high_low else 0.0
+
 class VolatilityAnalyzer:
     @staticmethod
     def calculate_standard_deviation(values):
@@ -280,30 +355,6 @@ class VolatilityAnalyzer:
         return math.sqrt(variance)
     
     @staticmethod
-    def calculate_atr(prices, period=14):
-        if len(prices) < period + 1:
-            return 0.0
-        high_low = [abs(prices[i] - prices[i-1]) for i in range(1, len(prices))]
-        return sum(high_low[-period:]) / period if high_low else 0.0
-    
-    @staticmethod
-    def calculate_ema(prices, period=20):
-        prices_series = pd.Series(prices)
-        return prices_series.ewm(span=period, adjust=False).mean().iloc[-1]
-    
-    @staticmethod
-    def detect_trend(prices, ema_period=20):
-        if len(prices) < ema_period:
-            return "neutral"
-        ema = VolatilityAnalyzer.calculate_ema(prices, ema_period)
-        current_price = prices[-1]
-        if current_price > ema:
-            return "up"
-        elif current_price < ema:
-            return "down"
-        return "neutral"
-    
-    @staticmethod
     def is_low_volatility(prices, threshold=0.20):
         if len(prices) < 20:
             return False, 0.0
@@ -312,27 +363,75 @@ class VolatilityAnalyzer:
         pct_vol = (VolatilityAnalyzer.calculate_standard_deviation(recent) / mean) * 100 if mean > 0 else 0
         return pct_vol < threshold, pct_vol
 
-class EnhancedSafetyChecks:
-    @staticmethod
-    def is_safe_entry(volatility_pct, atr, max_vol=0.20, max_atr=0.05):
-        return volatility_pct < max_vol and atr < max_atr
+class SignalGenerator:
+    def __init__(self, prices, params):
+        self.prices = prices
+        self.params = params
+        
+    def get_signal(self):
+        if len(self.prices) < 50:
+            return "neutral", 0, {}
+
+        ema_fast = TechnicalIndicators.calculate_ema(self.prices, self.params.get('ema_period', 12))
+        ema_slow = TechnicalIndicators.calculate_ema(self.prices, 26)
+        rsi = TechnicalIndicators.calculate_rsi(self.prices, 14)
+        macd, macd_signal, hist = TechnicalIndicators.calculate_macd(self.prices)
+        upper, mid, lower = TechnicalIndicators.calculate_bollinger_bands(self.prices)
+        
+        current_price = self.prices[-1]
+        
+        bullish_score = 0
+        bearish_score = 0
+        
+        # Trend Score
+        if ema_fast > ema_slow: bullish_score += 1
+        else: bearish_score += 1
+            
+        # MACD Score
+        if macd > macd_signal and hist > 0: bullish_score += 1
+        elif macd < macd_signal and hist < 0: bearish_score += 1
+            
+        # RSI Score
+        if rsi < 30: bullish_score += 2 # Oversold
+        elif rsi > 70: bearish_score += 2 # Overbought
+        elif 45 < rsi < 55: pass # Neutral zone
+        elif rsi > 55: bullish_score += 1
+        elif rsi < 45: bearish_score += 1
+            
+        # Bollinger Score
+        if current_price < lower: bullish_score += 1
+        elif current_price > upper: bearish_score += 1
+        
+        indicators = {
+            "rsi": rsi,
+            "macd": f"{macd:.4f}/{macd_signal:.4f}",
+            "ema": f"{ema_fast:.2f}/{ema_slow:.2f}",
+            "bb": f"{lower:.2f}/{upper:.2f}"
+        }
+
+        if bullish_score >= 3 and bearish_score < 2:
+            return "up", bullish_score, indicators
+        elif bearish_score >= 3 and bullish_score < 2:
+            return "down", bearish_score, indicators
+            
+        return "neutral", 0, indicators
 
 class DerivMultiplierBot:
     def __init__(self, api_token, app_id, trade_id, parameters):
         self.api_token = api_token
         self.app_id = app_id
         self.trade_id = trade_id
-        self.stake_per_trade = parameters.get('stake', 10.0)
+        self.stake_per_trade = parameters.get('stake', 1.0)
         self.symbol = parameters.get('symbol', 'R_100')
-        self.multiplier = parameters.get('multiplier', 50)
+        self.multiplier = parameters.get('multiplier', 200)
         self.risk_per_trade_pct = parameters.get('risk_per_trade_pct', 0.01)
-        self.ema_period = parameters.get('ema_period', 15)
+        
+        self.ema_period = parameters.get('ema_period', 20)
         self.atr_period = parameters.get('atr_period', 14)
-        # self.stop_loss_multiplier = parameters.get('stop_loss_multiplier', 1.8)
-        # self.take_profit_multiplier = parameters.get('take_profit_multiplier', 3.5)
-        self.stop_loss_amount = parameters.get('stop_loss_amount', 2.0)
-        self.take_profit_amount = parameters.get('take_profit_amount', 10.0)
-        self.max_daily_trades = parameters.get('max_daily_trades', 8)
+        
+        self.stop_loss_amount = parameters.get('stop_loss_amount', 1.0)
+        self.take_profit_amount = parameters.get('take_profit_amount', 1.5)
+        self.max_daily_trades = parameters.get('max_daily_trades', 10)
         self.max_consecutive_losses = parameters.get('max_consecutive_losses', 2)
         self.daily_loss_limit_pct = parameters.get('daily_loss_limit_pct', 0.03)
         
@@ -343,12 +442,13 @@ class DerivMultiplierBot:
         self.volatility = None
         self.atr = None
         self.ema = None
-        self.effective_multiplier = None  # To store actual multiplier used
+        self.rsi = None
+        self.macd = None
+        self.effective_multiplier = None
         
         self.ws_urls = [
             f"wss://ws.derivws.com/websockets/v3?app_id={app_id}",
             f"wss://wscluster1.deriv.com/websockets/v3?app_id={app_id}",
-            f"wss://wscluster2.deriv.com/websockets/v3?app_id={app_id}",
         ]
         self.ws_url = self.ws_urls[0]
         self.ws = None
@@ -362,7 +462,7 @@ class DerivMultiplierBot:
         self.entry_price = None
         self.exit_price = None
         
-        trade_logger.info(f"Bot initialized - Trade ID: {trade_id}, Symbol: {self.symbol}, Base Multiplier: {self.multiplier}")
+        trade_logger.info(f"Bot initialized - Trade ID: {trade_id}, Symbol: {self.symbol}")
         
     def get_next_request_id(self):
         self.request_id += 1
@@ -372,752 +472,240 @@ class DerivMultiplierBot:
         for ws_url in self.ws_urls:
             self.ws_url = ws_url
             try:
-                trade_logger.info(f"Attempting connection to {ws_url}")
+                trade_logger.info(f"Connecting to {ws_url}")
                 self.ws = await asyncio.wait_for(
                     websockets.connect(self.ws_url, ping_interval=None, close_timeout=5),
                     timeout=15.0
                 )
                 auth_success = await self.authorize()
                 if not auth_success:
-                    trade_logger.warning(f"Authorization failed on {ws_url}")
                     await self.ws.close()
-                    self.ws = None
-                    raise Exception("Authorization failed")
-                trade_logger.info(f"Successfully connected and authorized on {ws_url}")
+                    continue
                 return True
             except Exception as e:
-                trade_logger.error(f"Connection failed to {ws_url}: {e}")
-                if self.ws:
-                    await self.ws.close()
-                    self.ws = None
+                trade_logger.error(f"Connect failed: {e}")
+                if self.ws: await self.ws.close()
                 continue
         
         if retry_count < max_retries:
-            wait_time = 10 * (2 ** retry_count)
-            trade_logger.info(f"Retry {retry_count + 1}/{max_retries} in {wait_time}s")
-            await asyncio.sleep(wait_time)
+            await asyncio.sleep(10)
             return await self.connect(retry_count + 1, max_retries)
-        else:
-            trade_logger.error("Failed to connect after all retries")
-            raise Exception("Failed to connect after retries")
+        return False
     
     async def authorize(self):
-        if not self.api_token:
-            trade_logger.error("No API token provided")
-            return False
-        
         try:
-            auth_request = {
-                "authorize": self.api_token,
-                "req_id": self.get_next_request_id()
-            }
+            auth_request = {"authorize": self.api_token, "req_id": self.get_next_request_id()}
             await self.ws.send(json.dumps(auth_request))
-            
             response = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
             data = json.loads(response)
-            
-            if "error" in data:
-                trade_logger.error(f"Authorization error: {data['error']}")
-                return False
-            
             if "authorize" in data:
                 self.account_balance = float(data['authorize']['balance'])
                 self.initial_balance = self.account_balance
-                trade_logger.info(f"Authorized successfully. Balance: ${self.account_balance:.2f}")
                 return True
         except Exception as e:
-            trade_logger.error(f"Authorization exception: {e}")
+            trade_logger.error(f"Auth error: {e}")
         return False
     
-    async def get_balance(self):
-        try:
-            balance_request = {"balance": 1, "subscribe": 0, "req_id": self.get_next_request_id()}
-            response_data = await self.send_request(balance_request)
-            
-            if response_data and "balance" in response_data:
-                self.account_balance = float(response_data["balance"]["balance"])
-                return self.account_balance
-        except Exception as e:
-            trade_logger.error(f"Failed to get balance: {e}")
-        return self.account_balance
-    
-    async def analyze_ticks(self, periods=100):
+    async def analyze_market(self):
         try:
             ticks_request = {
                 "ticks_history": self.symbol,
-                "count": periods,
+                "count": 100,
                 "end": "latest",
                 "style": "ticks",
                 "req_id": self.get_next_request_id()
             }
-            response = await self.send_request(ticks_request)
+            await self.ws.send(json.dumps(ticks_request))
+            response_text = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
+            response = json.loads(response_text)
             
-            if not response or "error" in response:
-                trade_logger.warning(f"Tick history request failed: {response.get('error', 'No response') if response else 'None'}")
-                return None, None, None, None, None
-                
-            if "history" not in response or "prices" not in response["history"]:
-                trade_logger.warning(f"Incomplete tick history response: {response}")
-                return None, None, None, None, None
-                
+            if "history" not in response: return None
+            
             prices = [float(p) for p in response["history"]["prices"]]
-            if len(prices) < 30:
-                trade_logger.warning(f"Insufficient ticks received: {len(prices)} < 30")
-                return None, None, None, None, None
-                
             self.price_history.extend(prices)
             
-            vol_pct = (VolatilityAnalyzer.calculate_standard_deviation(prices[-20:]) / 
-                       np.mean(prices[-20:])) * 100 if np.mean(prices[-20:]) > 0 else 0
-            atr = VolatilityAnalyzer.calculate_atr(prices, self.atr_period)
-            ema = VolatilityAnalyzer.calculate_ema(prices, self.ema_period)
-            trend = VolatilityAnalyzer.detect_trend(prices, self.ema_period)
-            
-            trade_logger.info(f"📊 Analysis - Ticks: {len(prices)}, Vol: {vol_pct:.4f}%, ATR: {atr:.6f}, EMA: {ema:.2f}, Trend: {trend.upper()}")
-            
-            return vol_pct, atr, ema, trend, prices
-            
-        except Exception as e:
-            trade_logger.error(f"Exception in analyze_ticks: {e}")
-            return None, None, None, None, None
-    
-    async def wait_for_entry_signal(self, max_wait_time=90, check_interval=1):
-        trade_logger.info("🔍 STEP 1/3: Waiting for entry signal...")
-        start_time = datetime.now()
-        while (datetime.now() - start_time).total_seconds() < max_wait_time:
-            vol_pct, atr, ema, trend, prices = await self.analyze_ticks()
-            if vol_pct is None:
-                await asyncio.sleep(check_interval)
-                continue
+            gen = SignalGenerator(prices, self.params)
+            trend, score, indicators = gen.get_signal()
             
             is_low_vol, pct_vol = VolatilityAnalyzer.is_low_volatility(prices, self.volatility_threshold)
-            is_safe = EnhancedSafetyChecks.is_safe_entry(pct_vol, atr, self.volatility_threshold, self.atr_threshold)
+            atr = TechnicalIndicators.calculate_atr(prices, self.atr_period)
             
-            if is_safe and trend != "neutral":
-                self.volatility = pct_vol
-                self.atr = atr
-                self.ema = ema
+            self.volatility = pct_vol
+            self.atr = atr
+            self.rsi = indicators.get("rsi")
+            self.macd = indicators.get("macd")
+            
+            return trend, score, pct_vol, atr
+        except Exception as e:
+            trade_logger.error(f"Analyze error: {e}")
+            return None, 0, 0, 0
+
+    async def wait_for_entry_signal(self, max_wait_time=120):
+        start_time = datetime.now()
+        while (datetime.now() - start_time).total_seconds() < max_wait_time:
+            trend, score, vol, atr = await self.analyze_market()
+            if trend and trend != "neutral" and score >= 3 and atr < self.atr_threshold:
                 self.current_direction = "MULTUP" if trend == "up" else "MULTDOWN"
                 self.effective_multiplier = self.multiplier
-                trade_logger.info(f"✅ ENTRY SIGNAL FOUND - Direction: {trend.upper()}, Vol: {pct_vol:.4f}%, Multiplier: {self.effective_multiplier}")
-                return True, pct_vol, trend, "Signal approved", self.effective_multiplier
-                
-            elif is_safe and trend == "neutral":
-                self.volatility = pct_vol
-                self.atr = atr
-                self.ema = ema
-                self.current_direction = random.choice(["MULTUP", "MULTDOWN"])
-                self.effective_multiplier = self.multiplier // 2
-                trade_logger.info(f"🔶 FALLBACK ENTRY (neutral) - {self.current_direction}, Multiplier: {self.effective_multiplier}")
-                return True, pct_vol, "neutral", "Fallback neutral entry", self.effective_multiplier
-            else:
-                if not is_safe:
-                    trade_logger.debug(f"⏳ Waiting - High volatility/ATR ({pct_vol:.4f}% / {atr:.6f})")
-                if trend == "neutral":
-                    trade_logger.debug(f"⏳ Waiting - No clear trend (price near EMA)")
-            
-            await asyncio.sleep(check_interval)
-        
-        trade_logger.info("⏰ Max wait time reached - no valid entry signal")
-        return False, None, None, "Timeout: No safe entry signal", None
-    
+                return True, "Signal approved"
+            await asyncio.sleep(5)
+        return False, "Timeout: No strong signal"
+
     async def check_trading_conditions(self):
         today = datetime.now().date().isoformat()
         session = get_session_data(today)
         
         if not session:
             update_session_data(today, 0, 0, 0.0, 0)
-            trade_logger.info("New trading session started")
-            return True, "New session started"
+            return True, "New session"
         
-        if session['stopped']:
-            trade_logger.warning("Trading stopped for today")
-            return False, "Trading stopped for today"
+        if session['stopped']: return False, "Trading stopped"
+        if session['trades_count'] >= self.max_daily_trades: return False, "Max trades"
+        if session['consecutive_losses'] >= self.max_consecutive_losses: return False, "Max losses"
         
-        if session['trades_count'] >= self.max_daily_trades:
-            update_session_data(today, session['trades_count'],
-                              session['consecutive_losses'],
-                              session['total_profit_loss'], 1)
-            trade_logger.warning(f"Max daily trades reached: {self.max_daily_trades}")
-            return False, f"Max daily trades reached ({self.max_daily_trades})"
+        return True, "OK"
+
+    async def place_multiplier_trade(self):
+        can_enter, reason = await self.wait_for_entry_signal()
+        if not can_enter: return None, reason
         
-        if session['consecutive_losses'] >= self.max_consecutive_losses:
-            update_session_data(today, session['trades_count'],
-                              session['consecutive_losses'],
-                              session['total_profit_loss'], 1)
-            trade_logger.warning(f"Max consecutive losses reached: {self.max_consecutive_losses}")
-            return False, f"Max consecutive losses reached ({self.max_consecutive_losses})"
+        stake = min(self.stake_per_trade, self.account_balance * self.risk_per_trade_pct)
         
-        daily_loss_limit = self.initial_balance * self.daily_loss_limit_pct
-        if session['total_profit_loss'] <= -daily_loss_limit:
-            update_session_data(today, session['trades_count'],
-                              session['consecutive_losses'],
-                              session['total_profit_loss'], 1)
-            trade_logger.warning(f"Daily loss limit reached: ${daily_loss_limit:.2f}")
-            return False, f"Daily loss limit reached ({daily_loss_limit:.2f})"
+        proposal_request = {
+            "proposal": 1,
+            "amount": stake,
+            "basis": "stake",
+            "contract_type": self.current_direction,
+            "currency": "USD",
+            "symbol": self.symbol,
+            "multiplier": self.multiplier,
+            "limit_order": {
+                "stop_loss": self.stop_loss_amount,
+                "take_profit": self.take_profit_amount
+            }
+        }
         
-        trade_logger.info("Trading conditions check passed")
-        return True, "Trading conditions OK"
-    
+        try:
+            await self.ws.send(json.dumps(proposal_request))
+            res = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
+            data = json.loads(res)
+            
+            if "error" in data: return None, data["error"]["message"]
+            
+            proposal_id = data["proposal"]["id"]
+            buy_request = {"buy": proposal_id, "price": data["proposal"]["ask_price"]}
+            await self.ws.send(json.dumps(buy_request))
+            res = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
+            data = json.loads(res)
+            
+            if "error" in data: return None, data["error"]["message"]
+            
+            self.entry_price = float(data["buy"]["buy_price"])
+            return data["buy"]["contract_id"], None
+        except Exception as e:
+            return None, str(e)
+
+    async def monitor_contract(self, contract_id):
+        self.trade_start_time = datetime.now()
+        proposal_request = {
+            "proposal_open_contract": 1,
+            "contract_id": contract_id,
+            "subscribe": 1,
+            "req_id": self.get_next_request_id()
+        }
+        await self.ws.send(json.dumps(proposal_request))
+        
+        while True:
+            res = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
+            data = json.loads(res)
+            if "proposal_open_contract" in data:
+                contract = data["proposal_open_contract"]
+                if contract.get("is_sold"):
+                    profit = float(contract.get("profit", 0))
+                    return {
+                        "profit": profit,
+                        "status": "win" if profit > 0 else "loss",
+                        "exit_reason": contract.get("exit_reason", "limit_order"),
+                        "duration_seconds": (datetime.now() - self.trade_start_time).total_seconds(),
+                        "entry_price": self.entry_price,
+                        "exit_price": float(contract.get("sell_price", 0))
+                    }
+            await asyncio.sleep(2)
+
+    async def execute_trade_async(self):
+        try:
+            await self.connect()
+            can_trade, reason = await self.check_trading_conditions()
+            if not can_trade:
+                trade_results[self.trade_id] = {"success": False, "error": reason, "status": "skipped"}
+                return
+            
+            contract_id, error = await self.place_multiplier_trade()
+            if error:
+                trade_results[self.trade_id] = {"success": False, "error": error, "status": "error"}
+                return
+            
+            res = await self.monitor_contract(contract_id)
+            self.update_session_after_trade(res["profit"])
+            
+            result = {
+                "success": True, "trade_id": self.trade_id, "profit": res["profit"],
+                "status": "completed", "timestamp": datetime.now().isoformat(),
+                "volatility": self.volatility, "direction": self.current_direction,
+                "multiplier": self.multiplier, "entry_price": res["entry_price"],
+                "exit_price": res["exit_price"], "exit_reason": res["exit_reason"],
+                "duration_seconds": res["duration_seconds"], "atr": self.atr,
+                "rsi": self.rsi, "macd": self.macd
+            }
+            save_trade(self.trade_id, result)
+            trade_results[self.trade_id] = result
+        except Exception as e:
+            trade_logger.error(f"Trade failed: {e}")
+        finally:
+            if self.ws: await self.ws.close()
+            gc.collect()
+
     def update_session_after_trade(self, profit):
         today = datetime.now().date().isoformat()
-        session = get_session_data(today) or {
+        session = get_session_data(today) or {'trades_count': 0, 'consecutive_losses': 0, 'total_profit_loss': 0.0, 'stopped': 0}
+        new_consecutive = 0 if profit > 0 else session['consecutive_losses'] + 1
+        update_session_data(today, session['trades_count'] + 1, new_consecutive, session['total_profit_loss'] + profit, 0)
+
+# Flask app and endpoints
+app = Flask(__name__)
+
+@app.route('/trade/<app_id>/<api_token>', methods=['POST'])
+def execute_trade(app_id, api_token):
+    if not can_start_trade(): return jsonify({"error": "Busy"}), 429
+    data = request.get_json() or {}
+    new_trade_id = str(uuid.uuid4())
+    thread = Thread(target=lambda: asyncio.run(DerivMultiplierBot(api_token, app_id, new_trade_id, data).execute_trade_async()))
+    thread.start()
+    return jsonify({"trade_id": new_trade_id}), 202
+
+@app.route('/trades', methods=['GET'])
+def get_trades():
+    return jsonify(get_all_trades())
+
+@app.route('/session', methods=['GET'])
+def get_session():
+    today = datetime.now().date().isoformat()
+    session = get_session_data(today)
+    if not session:
+        return jsonify({
+            'session_date': today,
             'trades_count': 0,
             'consecutive_losses': 0,
             'total_profit_loss': 0.0,
             'stopped': 0
-        }
-        
-        new_trades_count = session['trades_count'] + 1
-        new_total_pl = session['total_profit_loss'] + profit
-        
-        if profit <= 0:
-            new_consecutive_losses = session['consecutive_losses'] + 1
-        else:
-            new_consecutive_losses = 0
-        
-        update_session_data(today, new_trades_count, new_consecutive_losses,
-                          new_total_pl, session['stopped'])
-        
-        trade_logger.info(f"Session updated: Trades={new_trades_count}, Losses={new_consecutive_losses}, P/L=${new_total_pl:.2f}")
-    
-    async def validate_symbol(self):
-        try:
-            spec_request = {
-                "contracts_for": self.symbol,
-                "req_id": self.get_next_request_id()
-            }
-            response = await self.send_request(spec_request)
-            
-            if not response or "error" in response:
-                trade_logger.error(f"contracts_for failed for {self.symbol}: {response.get('error') if response else 'No response'}")
-                return False
-            
-            if "contracts_for" not in response:
-                trade_logger.error(f"No contracts_for data in response for {self.symbol}: {response}")
-                return False
-            
-            available = response["contracts_for"].get("available", [])
-            trade_logger.info(f"Found {len(available)} contracts for {self.symbol}")
-            
-            contract_types = [c.get("contract_type") for c in available]
-            trade_logger.info(f"Available contract types: {contract_types}")
-            
-            has_multiplier = any(
-                c.get("contract_type") in ["MULTUP", "MULTDOWN"] 
-                for c in available
-            )
-            
-            if has_multiplier:
-                self.symbol_available = True
-                trade_logger.info(f"✅ {self.symbol} supports multipliers")
-                return True
-            else:
-                trade_logger.warning(f"❌ No multiplier contracts found for {self.symbol}")
-                return False
-                
-        except Exception as e:
-            trade_logger.error(f"Exception in validate_symbol: {e}")
-            return False
-    
-    async def send_request(self, request):
-        req_id = self.get_next_request_id()
-        request["req_id"] = req_id
-        
-        try:
-            await self.ws.send(json.dumps(request))
-            
-            while True:
-                response_text = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
-                data = json.loads(response_text)
-                if data.get("req_id") == req_id:
-                    return data
-                if "subscription" in data:
-                    continue
-        except Exception as e:
-            trade_logger.error(f"Request failed: {e}")
-        return None
-    
-    async def place_multiplier_trade(self):
-        try:
-            balance = await self.get_balance()
-            if balance < self.stake_per_trade:
-                trade_logger.error(f"Insufficient balance: ${balance:.2f}")
-                return None, "Insufficient balance"
-            
-            if not self.symbol_available:
-                if not await self.validate_symbol():
-                    trade_logger.error("Symbol does not support multipliers - skipping trade")
-                    return None, "Symbol validation failed"
-            
-            can_enter, vol, trend, reason, effective_multiplier = await self.wait_for_entry_signal()
-            if not can_enter:
-                trade_logger.info(f"SKIP: {reason}")
-                return None, reason
-            
-            trade_logger.info("STEP 2/3: Calculating risk...")
-            risk_amount = balance * self.risk_per_trade_pct
-            stake = min(self.stake_per_trade, risk_amount)
-            
-# Use absolute USD amounts from payload (configurable)
-            stop_loss_amount = self.stop_loss_amount
-            take_profit_amount = self.take_profit_amount
-
-            # Optional: Ensure they don't exceed stake
-            stop_loss_amount = min(stop_loss_amount, stake * 0.9)  # Max 90% of stake
-            # take_profit_amount = max(take_profit_amount, stake * 0.5)  # Min 50% profit target
-
-            trade_logger.info(f"Using SL: -${stop_loss_amount:.2f}, TP: +${take_profit_amount:.2f}")
-            
-            trade_logger.info("STEP 3/3: Final safety check...")
-            is_safe = EnhancedSafetyChecks.is_safe_entry(vol, self.atr, self.volatility_threshold, self.atr_threshold)
-            if not is_safe:
-                trade_logger.warning("Final safety check failed - aborting")
-                return None, "Final safety check failed"
-            
-            self.effective_multiplier = effective_multiplier or self.multiplier
-            trade_logger.info(f"All checks passed - placing {self.current_direction} trade with multiplier {self.effective_multiplier}")
-            
-            proposal_request = {
-                "proposal": 1,
-                "amount": stake,
-                "basis": "stake",
-                "contract_type": self.current_direction,
-                "currency": "USD",
-                "symbol": self.symbol,
-                "multiplier": self.effective_multiplier,
-                "limit_order": {
-                    "stop_loss": stop_loss_amount,      # Plain number
-                    "take_profit": take_profit_amount   # Plain number
-                }
-            }
-            
-            proposal_response = await self.send_request(proposal_request)
-            if not proposal_response or "error" in proposal_response:
-                error_msg = proposal_response.get('error', {}).get('message', 'Unknown error') if proposal_response else 'No response'
-                trade_logger.error(f"Proposal failed: {error_msg}")
-                return None, "Proposal failed"
-            
-            proposal_id = proposal_response["proposal"]["id"]
-            ask_price = proposal_response["proposal"]["ask_price"]
-            
-            buy_request = {"buy": proposal_id, "price": ask_price}
-            buy_response = await self.send_request(buy_request)
-            
-            if not buy_response or "error" in buy_response:
-                error_msg = buy_response.get('error', {}).get('message', 'Unknown error') if buy_response else 'No response'
-                trade_logger.error(f"Buy failed: {error_msg}")
-                return None, "Buy failed"
-            
-            contract_id = buy_response["buy"]["contract_id"]
-            self.entry_price = float(buy_response["buy"]["buy_price"])
-            trade_logger.info(f"TRADE PLACED - Contract: {contract_id}, Stake: ${stake:.2f}, "
-                             f"SL: -${stop_loss_amount}, TP: +${take_profit_amount}, "
-                             f"Multiplier: {self.effective_multiplier}")
-            
-            return contract_id, None
-            
-        except Exception as e:
-            trade_logger.error(f"Exception in place_multiplier_trade: {e}")
-            return None, str(e)
-               
-    async def monitor_contract(self, contract_id):
-        try:
-            self.trade_start_time = datetime.now()
-            req_id = self.get_next_request_id()
-            proposal_request = {
-                "proposal_open_contract": 1,
-                "contract_id": contract_id,
-                "subscribe": 1,
-                "req_id": req_id
-            }
-            await self.ws.send(json.dumps(proposal_request))
-            
-            while True:
-                try:
-                    response = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
-                    data = json.loads(response)
-                    
-                    if "proposal_open_contract" in data:
-                        contract = data["proposal_open_contract"]
-                        
-                        if contract.get("is_sold") or contract.get("status") == "sold":
-                            profit = float(contract.get("profit", 0))
-                            self.exit_price = float(contract.get("sell_price", 0))
-                            duration = (datetime.now() - self.trade_start_time).total_seconds()
-                            exit_reason = contract.get("exit_reason", "unknown")
-                            
-                            trade_logger.info(f"Trade closed - Profit: ${profit:.2f}, Duration: {duration:.1f}s, Reason: {exit_reason}")
-                            
-                            try:
-                                forget_request = {
-                                    "forget": data.get("subscription", {}).get("id"),
-                                    "req_id": self.get_next_request_id()
-                                }
-                                await self.ws.send(json.dumps(forget_request))
-                            except:
-                                pass
-                            
-                            return {
-                                "profit": profit,
-                                "status": "win" if profit > 0 else "loss",
-                                "contract_id": contract_id,
-                                "exit_reason": exit_reason,
-                                "duration_seconds": duration,
-                                "entry_price": self.entry_price,
-                                "exit_price": self.exit_price
-                            }
-                        
-                        current_profit = float(contract.get("profit", 0))
-                        trade_logger.debug(f"Current P/L: ${current_profit:.2f}")
-                        
-                    elif "error" in data:
-                        trade_logger.error(f"Contract error: {data['error']['message']}")
-                        return {
-                            "profit": 0,
-                            "status": "error",
-                            "error": data['error']['message'],
-                            "exit_reason": "error",
-                            "duration_seconds": (datetime.now() - self.trade_start_time).total_seconds()
-                        }
-                except asyncio.TimeoutError:
-                    trade_logger.error("Monitoring timeout")
-                    return {
-                        "profit": 0,
-                        "status": "error",
-                        "error": "Timeout",
-                        "exit_reason": "timeout",
-                        "duration_seconds": (datetime.now() - self.trade_start_time).total_seconds()
-                    }
-        except Exception as e:
-            trade_logger.error(f"Monitor exception: {e}")
-            return {
-                "profit": 0,
-                "status": "error",
-                "error": str(e),
-                "exit_reason": "monitor_failed",
-                "duration_seconds": 0
-            }
-    
-    async def execute_trade_async(self):
-        try:
-            trade_results[self.trade_id] = {'status': 'running'}
-            save_trade(self.trade_id, {
-                'timestamp': datetime.now().isoformat(),
-                'app_id': self.app_id,
-                'status': 'running',
-                'success': 0,
-                'initial_balance': self.initial_balance,
-                'parameters': {
-                    'stake': self.stake_per_trade,
-                    'symbol': self.symbol,
-                    'multiplier': self.multiplier
-                }
-            })
-            
-            await self.connect()
-            
-            can_trade, reason = await self.check_trading_conditions()
-            if not can_trade:
-                result = {
-                    "success": False,
-                    "error": reason,
-                    "trade_id": self.trade_id,
-                    "timestamp": datetime.now().isoformat(),
-                    "status": "skipped"
-                }
-                save_trade(self.trade_id, result)
-                trade_results[self.trade_id] = result
-                return result
-            
-            contract_id, error = await self.place_multiplier_trade()
-            if error:
-                result = {
-                    "success": False,
-                    "error": error,
-                    "trade_id": self.trade_id,
-                    "timestamp": datetime.now().isoformat(),
-                    "status": "skipped"
-                }
-                save_trade(self.trade_id, result)
-                trade_results[self.trade_id] = result
-                return result
-            
-            monitor_result = await self.monitor_contract(contract_id)
-            balance = await self.get_balance()
-            
-            self.update_session_after_trade(monitor_result.get("profit", 0))
-            
-            result = {
-                "success": True,
-                "trade_id": self.trade_id,
-                "contract_id": contract_id,
-                "profit": monitor_result.get("profit", 0),
-                "status": "completed",
-                "final_balance": balance,
-                "initial_balance": self.initial_balance,
-                "timestamp": datetime.now().isoformat(),
-                "app_id": self.app_id,
-                "volatility": self.volatility,
-                "direction": self.current_direction,
-                "multiplier": self.effective_multiplier or self.multiplier,
-                "entry_price": monitor_result.get("entry_price"),
-                "exit_price": monitor_result.get("exit_price"),
-                "exit_reason": monitor_result.get("exit_reason"),
-                "duration_seconds": monitor_result.get("duration_seconds"),
-                "atr": self.atr,
-                "ema": self.ema,
-                "parameters": {
-                    'stake': self.stake_per_trade,
-                    'symbol': self.symbol,
-                    'multiplier': self.effective_multiplier or self.multiplier
-                }
-            }
-            save_trade(self.trade_id, result)
-            trade_results[self.trade_id] = result
-            
-            return result
-        except Exception as e:
-            trade_logger.error(f"Execute trade exception: {e}")
-            result = {
-                "success": False,
-                "error": str(e),
-                "trade_id": self.trade_id,
-                "timestamp": datetime.now().isoformat(),
-                "status": "error"
-            }
-            save_trade(self.trade_id, result)
-            trade_results[self.trade_id] = result
-            return result
-        finally:
-            if self.ws:
-                try:
-                    await self.ws.close()
-                except:
-                    pass
-            gc.collect()
-
-def run_async_trade_in_thread(api_token, app_id, parameters, trade_id):
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        bot = DerivMultiplierBot(api_token, app_id, trade_id, parameters)
-        loop.run_until_complete(bot.execute_trade_async())
-        loop.close()
-    except Exception as e:
-        logger.error(f"Thread execution error: {e}")
-    finally:
-        trade_completed()
-        gc.collect()
-
-app = Flask(__name__)
-app.logger.disabled = True
-
-@app.route('/trade/<app_id>/<api_token>', methods=['POST'])
-def execute_trade(app_id, api_token):
-    try:
-        if not can_start_trade():
-            return jsonify({
-                "success": False,
-                "error": "Too many concurrent trades",
-                "max_concurrent": MAX_CONCURRENT_TRADES
-            }), 429
-        
-        data = request.get_json(silent=True) or {}
-        
-        parameters = {
-            'stake': float(data.get('stake', 10.0)),
-            'symbol': data.get('symbol', 'R_100'),
-            'multiplier': int(data.get('multiplier', 50)),
-            'risk_per_trade_pct': float(data.get('risk_per_trade_pct', 0.01)),
-            'ema_period': int(data.get('ema_period', 15)),
-            'atr_period': int(data.get('atr_period', 14)),
-            # 'stop_loss_multiplier': float(data.get('stop_loss_multiplier', 1.8)),
-            # 'take_profit_multiplier': float(data.get('take_profit_multiplier', 3.5)),
-            'max_daily_trades': int(data.get('max_daily_trades', 8)),
-            'max_consecutive_losses': int(data.get('max_consecutive_losses', 2)),
-            'daily_loss_limit_pct': float(data.get('daily_loss_limit_pct', 0.03)),
-            'volatility_threshold': float(data.get('volatility_threshold', 0.60)),
-            'atr_threshold': float(data.get('atr_threshold', 0.15)),
-
-            # NEW: Absolute USD stop loss and take profit
-            'stop_loss_amount': float(data.get('stop_loss_amount', 2.0)),
-            'take_profit_amount': float(data.get('take_profit_amount', 10.0))
-        }
-        
-        new_trade_id = str(uuid.uuid4())
-        initial_data = {
-            "status": "pending",
-            "timestamp": datetime.now().isoformat(),
-            "app_id": app_id,
-            "parameters": parameters
-        }
-        save_trade(new_trade_id, initial_data)
-        trade_results[new_trade_id] = initial_data
-        
-        api_logger.info(f"Trade initiated - ID: {new_trade_id}")
-        thread = Thread(
-            target=run_async_trade_in_thread,
-            args=(api_token, app_id, parameters, new_trade_id)
-        )
-        thread.daemon = True
-        thread.start()
-        
-        return jsonify({"status": "initiated", "trade_id": new_trade_id}), 202
-    except Exception as e:
-        api_logger.error(f"Endpoint error: {e}")
-        trade_completed()
-        return jsonify({"success": False, "error": "Internal Server Error"}), 500
-
-@app.route('/trade/<trade_id>', methods=['GET'])
-def get_trade_result(trade_id):
-    result = trade_results.get(trade_id) or get_trade(trade_id)
-    
-    if not result:
-        return jsonify({"success": False, "error": "Trade ID not found"}), 404
-    
-    response = {
-        "trade_id": trade_id,
-        "status": result.get('status', 'unknown'),
-        "timestamp": result.get('timestamp')
-    }
-    
-    if result.get('status') in ['completed', 'skipped', 'error']:
-        profit = result.get('profit', 0)
-        response.update({
-            "success": result.get('success', False),
-            "profit_loss": profit,
-            "result": "PROFIT" if profit > 0 else "LOSS" if profit < 0 else "SKIPPED",
-            "amount": abs(profit),
-            "contract_id": result.get('contract_id'),
-            "final_balance": result.get('final_balance'),
-            "volatility": result.get('volatility'),
-            "direction": result.get('direction'),
-            "exit_reason": result.get('exit_reason'),
-            "duration_seconds": result.get('duration_seconds'),
-            "error_details": result.get('error')
         })
-    
-    return jsonify(response), 200
-
-@app.route('/session', methods=['GET'])
-def get_session_status():
-    today = datetime.now().date().isoformat()
-    session = get_session_data(today)
-    
-    if not session:
-        return jsonify({
-            "session_date": today,
-            "trades_count": 0,
-            "consecutive_losses": 0,
-            "total_profit_loss": 0.0,
-            "stopped": False,
-            "message": "No trades today"
-        }), 200
-    
-    return jsonify({
-        "session_date": today,
-        "trades_count": session['trades_count'],
-        "consecutive_losses": session['consecutive_losses'],
-        "total_profit_loss": round(session['total_profit_loss'], 2),
-        "stopped": bool(session['stopped']),
-        "can_trade": not bool(session['stopped'])
-    }), 200
+    return jsonify(session)
 
 @app.route('/session/reset', methods=['POST'])
 def reset_session():
     today = datetime.now().date().isoformat()
     update_session_data(today, 0, 0, 0.0, 0)
-    api_logger.info("Session reset")
-    return jsonify({"message": "Session reset successfully", "date": today}), 200
-
-@app.route('/trades', methods=['GET'])
-def get_all_trades_endpoint():
-    all_trades = get_all_trades()
-    filter_by = request.args.get('filter', 'today')
-    
-    from datetime import date
-    today = date.today()
-    
-    if filter_by == 'today':
-        filtered_trades = [t for t in all_trades if t.get('timestamp', '').startswith(today.isoformat())]
-    elif filter_by == 'all':
-        filtered_trades = all_trades
-    else:
-        filtered_trades = [t for t in all_trades if t.get('timestamp', '').startswith(today.isoformat())]
-    
-    completed = [t for t in filtered_trades if t.get('status') == 'completed']
-    skipped = [t for t in filtered_trades if t.get('status') == 'skipped']
-    
-    wins = [t for t in completed if t.get('profit', 0) > 0]
-    losses = [t for t in completed if t.get('profit', 0) <= 0]
-    total_profit = sum(t.get('profit', 0) for t in completed)
-    avg_profit = total_profit / len(completed) if completed else 0.0
-    
-    trades_dict = {t['trade_id']: dict(t) for t in filtered_trades}
-    
-    win_rate = f"{(len(wins)/len(completed)*100):.2f}%" if completed else "0%"
-    
-    return jsonify({
-        "filter": filter_by,
-        "date": today.isoformat(),
-        "total_trades": len(filtered_trades),
-        "completed_trades": len(completed),
-        "skipped_trades": len(skipped),
-        "wins": len(wins),
-        "losses": len(losses),
-        "win_rate": win_rate,
-        "total_profit_loss": round(total_profit, 2),
-        "avg_profit": round(avg_profit, 2),
-        "trades": trades_dict
-    }), 200
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        "status": "healthy",
-        "service": "Deriv Multiplier Bot v1.2 - Final Optimized Version",
-        "timestamp": datetime.now().isoformat(),
-        "active_trades": active_trade_count,
-        "max_concurrent": MAX_CONCURRENT_TRADES,
-        "mode": "TREND_FOLLOWING",
-        "features": [
-            "Pure Python indicators (no TA-Lib)",
-            "Enhanced logging for entry decisions",
-            "Robust tick fetching with fallbacks",
-            "Clear skip vs place distinction",
-            "Fallback neutral entries with reduced multiplier",
-            "Accurate multiplier tracking",
-            "Improved dashboard with avg profit"
-        ]
-    }), 200
-
-@app.route('/config/optimal', methods=['GET'])
-def get_optimal_config():
-    return jsonify({
-        "recommended_setup": {
-            "description": "Safe trend-following multipliers on volatility indices",
-            "parameters": {
-                "stake": 1.0,
-                "symbol": "R_100",
-                "multiplier": 500,
-                "risk_per_trade_pct": 0.01,
-                "ema_period": 15,
-                "atr_period": 14,
-                "stop_loss_multiplier": 1.8,
-                "take_profit_multiplier": 3.5,
-                "volatility_threshold": 0.35,
-                "atr_threshold": 0.09
-            },
-            "notes": [
-                "High multiplier for max profit",
-                "Relaxed thresholds for entries",
-                "Fallback neutral entries with halved multiplier",
-                "Cron every 10-15 minutes"
-            ]
-        }
-    }), 200
+    return jsonify({"success": True, "message": "Session reset successfully"})
 
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
@@ -1127,143 +715,187 @@ def dashboard():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multiplier Bot Dashboard</title>
+    <title>Quantum Multiplier Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #0b0e14; color: #e2e8f0; }
-        .glass { background: rgba(23, 27, 34, 0.8); backdrop-filter: blur(8px); border: 1px solid #1e293b; }
-        .status-badge { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
-        .win { background: rgba(16, 185, 129, 0.1); color: #10b981; }
-        .loss { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
-        .running { background: rgba(59, 130, 246, 0.1); color: #3b82f6; animation: pulse 2s infinite; }
-        .skipped { background: rgba(251, 191, 36, 0.1); color: #f59e0b; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+        :root {
+            --bg: #05070a;
+            --card: #0c1017;
+            --accent: #3b82f6;
+            --success: #10b981;
+            --danger: #ef4444;
+            --text: #e2e8f0;
+        }
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg); color: var(--text); }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .card { background-color: var(--card); border: 1px solid #1e293b; border-radius: 12px; }
+        .stat-card { transition: transform 0.2s ease; }
+        .stat-card:hover { transform: translateY(-2px); border-color: var(--accent); }
+        .indicator-dot { height: 8px; width: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-win { color: var(--success); }
+        .status-loss { color: var(--danger); }
+        .status-running { color: var(--accent); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
     </style>
 </head>
-<body class="p-6">
+<body class="p-4 md:p-8">
     <div class="max-w-7xl mx-auto">
-        <header class="flex justify-between items-center mb-8 border-b border-slate-800 pb-6">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
             <div>
-                <h1 class="text-xl font-bold">MULTIPLIER BOT <span class="text-blue-500 text-xs">v1.2 FINAL</span></h1>
-                <p id="sync-status" class="text-slate-500 text-xs mt-1 italic">Last update: --:--:--</p>
+                <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                    QUANTUM MULTIPLIER <span class="bg-blue-500/10 text-blue-500 text-[10px] px-2 py-0.5 rounded border border-blue-500/20">PRO v2.0</span>
+                </h1>
+                <p id="last-update" class="text-slate-500 text-xs mt-1 mono uppercase tracking-tighter">System Idle | Syncing...</p>
             </div>
-            <div class="text-right">
-                <p class="text-slate-500 text-[10px] uppercase tracking-widest">Session P/L</p>
-                <h2 id="session-pl" class="text-2xl font-bold">$0.00</h2>
+            <div class="flex gap-3">
+                <button onclick="window.location.reload()" class="bg-slate-800 hover:bg-slate-700 text-white text-xs px-4 py-2 rounded-lg font-semibold transition-colors">REFRESH</button>
+                <button onclick="fetch('/session/reset', {method:'POST'}).then(() => window.location.reload())" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs px-4 py-2 rounded-lg font-semibold border border-red-500/20 transition-colors">RESET SESSION</button>
             </div>
         </header>
-        <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
-            <div class="glass p-5 rounded-xl">
-                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Total Attempts</p>
-                <p id="stat-total" class="text-xl font-bold">0</p>
+
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <div class="card p-5 stat-card">
+                <p class="text-slate-500 text-[10px] font-bold uppercase tracking-widest mb-1">Total P/L</p>
+                <p id="total-pl" class="text-2xl font-bold mono">$0.00</p>
             </div>
-            <div class="glass p-5 rounded-xl">
-                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Completed</p>
-                <p id="stat-completed" class="text-xl font-bold">0</p>
+            <div class="card p-5 stat-card">
+                <p class="text-slate-500 text-[10px] font-bold uppercase tracking-widest mb-1">Win Rate</p>
+                <p id="win-rate" class="text-2xl font-bold mono">0%</p>
             </div>
-            <div class="glass p-5 rounded-xl">
-                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Win Rate</p>
-                <p id="stat-winrate" class="text-xl font-bold">0%</p>
+            <div class="card p-5 stat-card">
+                <p class="text-slate-500 text-[10px] font-bold uppercase tracking-widest mb-1">Trades</p>
+                <div class="flex items-baseline gap-2">
+                    <span id="trades-count" class="text-2xl font-bold mono">0</span>
+                    <span id="wins-losses" class="text-xs text-slate-500">0W / 0L</span>
+                </div>
             </div>
-            <div class="glass p-5 rounded-xl">
-                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Avg Profit</p>
-                <p id="stat-avgprofit" class="text-xl font-bold">$0.00</p>
-            </div>
-            <div class="glass p-5 rounded-xl">
-                <p class="text-slate-500 text-xs font-semibold mb-1 uppercase">Skipped</p>
-                <p id="stat-skipped" class="text-xl font-bold text-amber-500">0</p>
+            <div class="card p-5 stat-card">
+                <p class="text-slate-500 text-[10px] font-bold uppercase tracking-widest mb-1">Session</p>
+                <p id="session-status" class="text-2xl font-bold text-emerald-500">ACTIVE</p>
             </div>
         </div>
+
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-2 glass rounded-xl overflow-hidden">
-                <div class="px-6 py-4 border-b border-slate-800 bg-slate-900/50">
-                    <h3 class="font-bold text-sm">Trade Log</h3>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left text-sm">
-                        <thead class="bg-slate-900/30 text-slate-500 text-[10px] uppercase">
-                            <tr>
-                                <th class="px-6 py-3">Time</th>
-                                <th class="px-6 py-3">Symbol</th>
-                                <th class="px-6 py-3">Direction</th>
-                                <th class="px-6 py-3">Status</th>
-                                <th class="px-6 py-3 text-right">P/L</th>
-                            </tr>
-                        </thead>
-                        <tbody id="trade-body"></tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="space-y-6">
-                <div class="glass p-6 rounded-xl">
-                    <h3 class="text-amber-500 text-xs font-bold uppercase mb-4">Recent Skips</h3>
-                    <div id="skip-log" class="space-y-3 max-h-96 overflow-y-auto text-xs">
-                        <p class="text-slate-600 italic">No skips recorded yet.</p>
+            <div class="lg:col-span-2 space-y-6">
+                <div class="card overflow-hidden">
+                    <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
+                        <h3 class="text-sm font-bold text-white uppercase tracking-wider">Active Execution Log</h3>
+                        <div class="flex items-center gap-2">
+                            <span class="indicator-dot bg-emerald-500"></span>
+                            <span class="text-[10px] text-slate-500 font-bold uppercase">Live Terminal</span>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-slate-900/40 text-slate-500 text-[10px] font-bold uppercase tracking-widest">
+                                <tr>
+                                    <th class="px-6 py-4">Timestamp</th>
+                                    <th class="px-6 py-4">Asset</th>
+                                    <th class="px-6 py-4">Direction</th>
+                                    <th class="px-6 py-4">Indicators</th>
+                                    <th class="px-6 py-4 text-right">Result</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trade-table" class="divide-y divide-slate-800">
+                                <!-- Trades injected here -->
+                            </tbody>
+                        </table>
                     </div>
                 </div>
-                <div class="glass p-6 rounded-xl">
-                    <h3 class="text-emerald-500 text-xs font-bold uppercase mb-4">Performance</h3>
-                    <p id="total-profit" class="text-xl font-bold">$0.00</p>
-                    <p class="text-slate-500 text-xs mt-2">Total P/L</p>
+            </div>
+
+            <div class="space-y-6">
+                <div class="card p-6">
+                    <h3 class="text-xs font-bold text-blue-500 uppercase tracking-widest mb-4">Market Conditions</h3>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center pb-3 border-b border-slate-800/50">
+                            <span class="text-xs text-slate-400">RSI (14)</span>
+                            <span id="market-rsi" class="mono text-xs font-bold">--</span>
+                        </div>
+                        <div class="flex justify-between items-center pb-3 border-b border-slate-800/50">
+                            <span class="text-xs text-slate-400">MACD Histogram</span>
+                            <span id="market-macd" class="mono text-xs font-bold">--</span>
+                        </div>
+                        <div class="flex justify-between items-center pb-3 border-b border-slate-800/50">
+                            <span class="text-xs text-slate-400">Volatility (ATR)</span>
+                            <span id="market-atr" class="mono text-xs font-bold">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card p-6 bg-blue-500/5 border-blue-500/20">
+                    <h3 class="text-xs font-bold text-white uppercase tracking-widest mb-2">Technical Summary</h3>
+                    <p class="text-xs text-slate-400 leading-relaxed italic">
+                        The Quantum Multiplier Pro utilizes a proprietary triple-confirmation engine combining Bollinger mean reversion, RSI strength, and MACD trend convergence.
+                    </p>
                 </div>
             </div>
         </div>
     </div>
+
     <script>
-        async function updateDashboard() {
+        async function updateUI() {
             try {
-                const [tradesRes, sessionRes] = await Promise.all([
-                    fetch('/trades'),
-                    fetch('/session')
-                ]);
-                const tradesData = await tradesRes.json();
+                const response = await fetch('/trades');
+                const trades = await response.json();
+                const sessionRes = await fetch('/session');
                 const session = await sessionRes.json();
-                
-                document.getElementById('stat-total').innerText = tradesData.total_trades;
-                document.getElementById('stat-completed').innerText = tradesData.completed_trades;
-                document.getElementById('stat-skipped').innerText = tradesData.skipped_trades;
-                document.getElementById('stat-winrate').innerText = tradesData.win_rate;
-                document.getElementById('stat-avgprofit').innerText = `$${tradesData.avg_profit}`;
-                document.getElementById('session-pl').innerText = `$${tradesData.total_profit_loss}`;
-                document.getElementById('session-pl').className = `text-2xl font-bold ${tradesData.total_profit_loss >= 0 ? 'text-emerald-500' : 'text-red-500'}`;
-                document.getElementById('total-profit').innerText = `$${tradesData.total_profit_loss}`;
-                document.getElementById('sync-status').innerText = `Last update: ${new Date().toLocaleTimeString()}`;
-                
-                const tbody = document.getElementById('trade-body');
-                const skipLog = document.getElementById('skip-log');
+
+                // Stats Update
+                const completed = trades.filter(t => t.status === 'completed');
+                const wins = completed.filter(t => t.profit > 0);
+                const totalPL = completed.reduce((sum, t) => sum + t.profit, 0);
+                const winRate = completed.length > 0 ? ((wins.length / completed.length) * 100).toFixed(1) : 0;
+
+                document.getElementById('total-pl').innerText = `${totalPL >= 0 ? '+' : ''}$${totalPL.toFixed(2)}`;
+                document.getElementById('total-pl').className = `text-2xl font-bold mono ${totalPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`;
+                document.getElementById('win-rate').innerText = `${winRate}%`;
+                document.getElementById('trades-count').innerText = completed.length;
+                document.getElementById('wins-losses').innerText = `${wins.length}W / ${completed.length - wins.length}L`;
+                document.getElementById('last-update').innerText = `Last sync: ${new Date().toLocaleTimeString()} | SYSTEM STABLE`;
+                document.getElementById('session-status').innerText = session.stopped ? 'STOPPED' : 'ACTIVE';
+                document.getElementById('session-status').className = `text-2xl font-bold ${session.stopped ? 'text-red-500' : 'text-emerald-500'}`;
+
+                // Table Update
+                const tbody = document.getElementById('trade-table');
                 tbody.innerHTML = '';
-                skipLog.innerHTML = '';
                 
-                Object.values(tradesData.trades).reverse().forEach(t => {
+                trades.slice(0, 10).forEach(t => {
                     const profit = parseFloat(t.profit || 0);
-                    const status = t.status === 'completed' ? (profit > 0 ? 'win' : 'loss') : 
-                                 t.status === 'skipped' ? 'skipped' : t.status;
-                    const statusClass = status === 'win' ? 'win' : status === 'loss' ? 'loss' : 
-                                      status === 'skipped' ? 'skipped' : 'running';
+                    const isRunning = t.status === 'running';
+                    const resultText = isRunning ? 'RUNNING' : (profit > 0 ? '+$' + profit.toFixed(2) : '-$' + Math.abs(profit).toFixed(2));
+                    const resultClass = isRunning ? 'status-running' : (profit > 0 ? 'status-win' : 'status-loss');
+                    const indicators = `RSI:${t.rsi?.toFixed(0) || '--'} MACD:${t.macd || '--'}`;
+
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-800/30 transition-colors">
+                            <td class="px-6 py-4 text-[10px] text-slate-500 mono">${t.timestamp.split('T')[1].substring(0,8)}</td>
+                            <td class="px-6 py-4 font-semibold text-slate-200">${t.parameters?.symbol || t.symbol || 'R_100'}</td>
+                            <td class="px-6 py-4">
+                                <span class="text-[10px] font-bold px-2 py-0.5 rounded ${t.direction === 'MULTUP' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}">
+                                    ${t.direction === 'MULTUP' ? 'CALL' : 'PUT'}
+                                </span>
+                            </td>
+                            <td class="px-6 py-4 text-[10px] text-slate-500 mono">${indicators}</td>
+                            <td class="px-6 py-4 text-right font-bold mono ${resultClass}">${resultText}</td>
+                        </tr>
+                    `;
                     
-                    if (t.status === 'skipped' || t.status === 'error') {
-                        skipLog.innerHTML += `<div class="p-2 bg-amber-500/10 rounded">
-                            <span class="text-xs text-slate-500">${t.timestamp.split('T')[1].split('.')[0]}</span>
-                            <p class="text-amber-300">${t.error || 'No signal'}</p>
-                        </div>`;
-                    } else {
-                        tbody.innerHTML += `
-                            <tr class="hover:bg-slate-800/20">
-                                <td class="px-6 py-4 text-xs text-slate-500">${t.timestamp.split('T')[1].split('.')[0]}</td>
-                                <td class="px-6 py-4">${t.parameters?.symbol || 'R_100'}</td>
-                                <td class="px-6 py-4">${t.direction || '-'}</td>
-                                <td class="px-6 py-4"><span class="status-badge ${statusClass}">${status}</span></td>
-                                <td class="px-6 py-4 text-right font-bold ${profit > 0 ? 'text-emerald-500' : 'text-red-500'}">
-                                    ${t.status === 'running' ? '...' : '$' + profit.toFixed(2)}
-                                </td>
-                            </tr>`;
+                    if (!isRunning && t === trades[0]) {
+                        document.getElementById('market-rsi').innerText = t.rsi?.toFixed(2) || '--';
+                        document.getElementById('market-macd').innerText = t.macd || '--';
+                        document.getElementById('market-atr').innerText = t.atr?.toFixed(4) || '--';
                     }
                 });
-            } catch (e) { console.error(e); }
+            } catch (e) { console.error('UI Sync Failed:', e); }
         }
-        setInterval(updateDashboard, 8000);
-        updateDashboard();
+
+        setInterval(updateUI, 5000);
+        updateUI();
     </script>
 </body>
 </html>
@@ -1271,13 +903,4 @@ def dashboard():
     return html, 200
 
 if __name__ == '__main__':
-    logger.info("=" * 60)
-    logger.info("Starting Deriv Multiplier Bot v1.2 - Final Optimized Version")
-    logger.info("Safe trend-following with fallback entries and high multiplier")
-    logger.info("=" * 60)
-    
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"Server starting on port {port}")
-    logger.info("Ready for cron triggers every 10-15 minutes")
-    
-    app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False, threaded=True)
+    app.run(host='0.0.0.0', port=5000)
