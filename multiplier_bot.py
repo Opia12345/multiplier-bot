@@ -421,6 +421,7 @@ class DerivMultiplierBot:
         self.api_token = api_token
         self.app_id = app_id
         self.trade_id = trade_id
+        self.params = parameters
         self.stake_per_trade = parameters.get('stake', 1.0)
         self.symbol = parameters.get('symbol', 'R_100')
         self.multiplier = parameters.get('multiplier', 200)
