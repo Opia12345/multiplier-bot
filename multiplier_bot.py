@@ -886,78 +886,143 @@ class DerivMultiplierBot:
                 trade_logger.error(f"Monitor error: {e}")
                 return {"profit": 0, "status": "error", "error": str(e)}
 
-    async def execute_trade_async(self):
-        try:
-            # Initialize with running status and timestamp
-            trade_results[self.trade_id] = {
-                'status': 'running',
-                'trade_id': self.trade_id,
-                'timestamp': datetime.now().isoformat(),
-                'app_id': self.app_id,
-                'direction': None,
-                'parameters': self.params
-            }            
-            await self.connect()
-            if not await self.authorize():
-                return
-            
-            can_trade, reason = await self.check_trading_conditions()
-            if not can_trade:
-                trade_results[self.trade_id] = {"status": "skipped", "error": reason}
-                return
-            
-            contract_id, error = await self.place_multiplier_trade()
-            # Update with direction once we have it
-            if self.current_direction:
-                trade_results[self.trade_id]['direction'] = self.current_direction
-                trade_results[self.trade_id]['multiplier'] = self.effective_multiplier
-                trade_results[self.trade_id]['contract_id'] = contract_id
-            if error:
-                trade_results[self.trade_id] = {"status": "error", "error": error}
-                return
-            
-            result = await self.monitor_contract(contract_id)
-            balance = await self.get_balance()
-            
-            self.update_session_after_trade(result["profit"])
-            
-            final_result = {
-                "success": result["profit"] > 0,
+async def execute_trade_async(self):
+    try:
+        # Initialize with running status and timestamp
+        trade_results[self.trade_id] = {
+            'status': 'running',
+            'trade_id': self.trade_id,
+            'timestamp': datetime.now().isoformat(),
+            'app_id': self.app_id,
+            'direction': None,
+            'parameters': self.params
+        }            
+        
+        connected = await self.connect()
+        if not connected:
+            error_data = {
                 "trade_id": self.trade_id,
-                "contract_id": contract_id,
-                "profit": result["profit"],
-                "status": "completed",
-                "final_balance": balance,
                 "timestamp": datetime.now().isoformat(),
-                "direction": self.current_direction,
-                "multiplier": self.effective_multiplier,
-                "entry_price": result["entry_price"],
-                "exit_price": result["exit_price"],
-                "exit_reason": result["exit_reason"],
-                "duration_seconds": result["duration_seconds"],
-                "mtf_aligned": result.get("mtf_aligned", False),
-                "tick_volume": result.get("tick_volume", 0),
-                "spread_pct": result.get("spread_pct", 0),
-                "optimal_stake": result.get("optimal_stake", self.stake_per_trade),
+                "status": "error",
+                "error": "Connection failed",
+                "app_id": self.app_id,
                 "parameters": self.params
             }
-            
-            save_trade(self.trade_id, final_result)
-            trade_results[self.trade_id] = final_result
-            
-        except Exception as e:
-            trade_logger.error(f"Critical error: {e}")
-        except Exception as e:
-            trade_logger.error(f"Critical error: {e}")
-        finally:
-            if self.ws:
-                try:
-                    await self.ws.close()
-                except:
-                    pass
-            gc.collect()
-            trade_completed()
-
+            save_trade(self.trade_id, error_data)
+            trade_results[self.trade_id] = error_data
+            return
+        
+        if not await self.authorize():
+            error_data = {
+                "trade_id": self.trade_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "error",
+                "error": "Authorization failed",
+                "app_id": self.app_id,
+                "parameters": self.params
+            }
+            save_trade(self.trade_id, error_data)
+            trade_results[self.trade_id] = error_data
+            return
+        
+        can_trade, reason = await self.check_trading_conditions()
+        if not can_trade:
+            skip_data = {
+                "trade_id": self.trade_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "skipped",
+                "error": reason,
+                "app_id": self.app_id,
+                "parameters": self.params
+            }
+            save_trade(self.trade_id, skip_data)
+            trade_results[self.trade_id] = skip_data
+            return
+        
+        contract_id, error = await self.place_multiplier_trade()
+        
+        # Update with direction once we have it
+        if self.current_direction:
+            trade_results[self.trade_id]['direction'] = self.current_direction
+            trade_results[self.trade_id]['multiplier'] = self.effective_multiplier
+            trade_results[self.trade_id]['contract_id'] = contract_id
+        
+        if error:
+            error_data = {
+                "trade_id": self.trade_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "error",
+                "error": error,
+                "app_id": self.app_id,
+                "direction": self.current_direction,
+                "parameters": self.params
+            }
+            save_trade(self.trade_id, error_data)
+            trade_results[self.trade_id] = error_data
+            return
+        
+        result = await self.monitor_contract(contract_id)
+        balance = await self.get_balance()
+        
+        self.update_session_after_trade(result["profit"])
+        
+        final_result = {
+            "success": result["profit"] > 0,
+            "trade_id": self.trade_id,
+            "contract_id": contract_id,
+            "profit": result["profit"],
+            "status": "completed",
+            "final_balance": balance,
+            "initial_balance": self.initial_balance,
+            "timestamp": datetime.now().isoformat(),
+            "app_id": self.app_id,
+            "direction": self.current_direction,
+            "multiplier": self.effective_multiplier,
+            "entry_price": result["entry_price"],
+            "exit_price": result["exit_price"],
+            "exit_reason": result["exit_reason"],
+            "duration_seconds": result["duration_seconds"],
+            "mtf_aligned": result.get("mtf_aligned", False),
+            "tick_volume": result.get("tick_volume", 0),
+            "spread_pct": result.get("spread_pct", 0),
+            "optimal_stake": result.get("optimal_stake", self.stake_per_trade),
+            "parameters": self.params
+        }
+        
+        # CRITICAL: Save to database FIRST
+        save_trade(self.trade_id, final_result)
+        trade_logger.info(f"Trade {self.trade_id} saved to database with status: {final_result['status']}")
+        
+        # Then update memory cache
+        trade_results[self.trade_id] = final_result
+        
+        trade_logger.info(f"Trade completed: {'WIN' if result['profit'] > 0 else 'LOSS'} ${result['profit']:.2f}")
+        
+    except Exception as e:
+        trade_logger.error(f"Critical error: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        error_data = {
+            "trade_id": self.trade_id,
+            "timestamp": datetime.now().isoformat(),
+            "status": "error",
+            "error": str(e),
+            "app_id": self.app_id,
+            "parameters": self.params
+        }
+        save_trade(self.trade_id, error_data)
+        trade_results[self.trade_id] = error_data
+        
+    finally:
+        if self.ws:
+            try:
+                await self.ws.close()
+            except:
+                pass
+        gc.collect()
+        trade_completed()
+        
 # Flask Routes
 app = Flask(__name__)
 app.logger.disabled = True
