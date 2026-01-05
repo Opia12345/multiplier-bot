@@ -767,13 +767,18 @@ class DerivMultiplierBot:
         trade_logger.info(f"Session: {new_trades_count} trades | {new_consecutive} losses | P/L: ${new_total_pl:.2f}")
 
     async def place_multiplier_trade(self):
+        trade_logger.info("[TRADE PLACEMENT] Starting trade placement")
+        
         can_enter, reason = await self.wait_for_entry_signal()
         if not can_enter:
+            trade_logger.warning(f"[TRADE PLACEMENT] Cannot enter: {reason}")
             return None, reason
         
-        # Kelly Criterion sizing
+        trade_logger.info("[TRADE PLACEMENT] ✓ Signal confirmed, calculating stake")
         self.optimal_stake = self.calculate_kelly_stake()
         stake = self.optimal_stake
+        
+        trade_logger.info(f"[TRADE PLACEMENT] Preparing proposal: Direction={self.current_direction}, Stake=${stake}, Multiplier={self.effective_multiplier}")
         
         proposal_request = {
             "proposal": 1,
@@ -790,25 +795,59 @@ class DerivMultiplierBot:
         }
         
         try:
+            trade_logger.info("[TRADE PLACEMENT] Sending proposal request")
+            trade_logger.debug(f"[TRADE PLACEMENT] Proposal: {json.dumps(proposal_request, indent=2)}")
+            
             response = await self.send_request(proposal_request)
+            
+            if response is None:
+                trade_logger.error("[TRADE PLACEMENT] No response from proposal request")
+                return None, "No proposal response"
+                
+            trade_logger.debug(f"[TRADE PLACEMENT] Proposal response: {json.dumps(response, indent=2)}")
+            
             if "error" in response:
-                return None, response["error"]["message"]
+                error_msg = response["error"].get("message", "Unknown error")
+                trade_logger.error(f"[TRADE PLACEMENT] Proposal error: {error_msg}")
+                return None, error_msg
+            
+            if "proposal" not in response:
+                trade_logger.error("[TRADE PLACEMENT] Invalid proposal response format")
+                return None, "Invalid proposal response"
             
             proposal_id = response["proposal"]["id"]
-            buy_request = {"buy": proposal_id, "price": response["proposal"]["ask_price"]}
+            ask_price = response["proposal"]["ask_price"]
+            trade_logger.info(f"[TRADE PLACEMENT] ✓ Proposal accepted | ID: {proposal_id} | Ask: ${ask_price}")
+            
+            trade_logger.info("[TRADE PLACEMENT] Executing buy order")
+            buy_request = {"buy": proposal_id, "price": ask_price}
             buy_response = await self.send_request(buy_request)
             
+            if buy_response is None:
+                trade_logger.error("[TRADE PLACEMENT] No response from buy request")
+                return None, "No buy response"
+            
+            trade_logger.debug(f"[TRADE PLACEMENT] Buy response: {json.dumps(buy_response, indent=2)}")
+            
             if "error" in buy_response:
-                return None, buy_response["error"]["message"]
+                error_msg = buy_response["error"].get("message", "Unknown error")
+                trade_logger.error(f"[TRADE PLACEMENT] Buy error: {error_msg}")
+                return None, error_msg
+            
+            if "buy" not in buy_response:
+                trade_logger.error("[TRADE PLACEMENT] Invalid buy response format")
+                return None, "Invalid buy response"
             
             contract_id = buy_response["buy"]["contract_id"]
             self.entry_price = float(buy_response["buy"]["buy_price"])
             
-            trade_logger.info(f"TRADE EXECUTED | Stake: ${stake:.2f} | Direction: {self.current_direction} | MTF: {'YES' if self.mtf_aligned else 'NO'}")
+            trade_logger.info(f"[TRADE PLACEMENT] ✓✓✓ TRADE EXECUTED | Contract: {contract_id} | Entry: ${self.entry_price}")
             return contract_id, None
+            
         except Exception as e:
+            trade_logger.error(f"[TRADE PLACEMENT] Critical error: {e}")
             return None, str(e)
-
+    
     async def monitor_contract(self, contract_id):
         self.trade_start_time = datetime.now()
         subscribe_request = {
