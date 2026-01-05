@@ -888,8 +888,15 @@ class DerivMultiplierBot:
 
     async def execute_trade_async(self):
         try:
-            trade_results[self.trade_id] = {'status': 'running'}
-            
+            # Initialize with running status and timestamp
+            trade_results[self.trade_id] = {
+                'status': 'running',
+                'trade_id': self.trade_id,
+                'timestamp': datetime.now().isoformat(),
+                'app_id': self.app_id,
+                'direction': None,
+                'parameters': self.params
+            }            
             await self.connect()
             if not await self.authorize():
                 return
@@ -900,6 +907,11 @@ class DerivMultiplierBot:
                 return
             
             contract_id, error = await self.place_multiplier_trade()
+            # Update with direction once we have it
+            if self.current_direction:
+                trade_results[self.trade_id]['direction'] = self.current_direction
+                trade_results[self.trade_id]['multiplier'] = self.effective_multiplier
+                trade_results[self.trade_id]['contract_id'] = contract_id
             if error:
                 trade_results[self.trade_id] = {"status": "error", "error": error}
                 return
@@ -935,6 +947,8 @@ class DerivMultiplierBot:
             
         except Exception as e:
             trade_logger.error(f"Critical error: {e}")
+        except Exception as e:
+            trade_logger.error(f"Critical error: {e}")
         finally:
             if self.ws:
                 try:
@@ -942,6 +956,7 @@ class DerivMultiplierBot:
                 except:
                     pass
             gc.collect()
+            trade_completed()
 
 # Flask Routes
 app = Flask(__name__)
@@ -964,7 +979,28 @@ def execute_trade(app_id, api_token):
 
 @app.route('/trades', methods=['GET'])
 def get_trades():
-    return jsonify(get_all_trades())
+    # Get completed trades from database
+    db_trades = get_all_trades()
+    
+    # Add currently running trades from memory
+    for trade_id, trade_data in trade_results.items():
+        if trade_data.get('status') == 'running':
+            # Check if not already in database
+            if not any(t.get('trade_id') == trade_id for t in db_trades):
+                db_trades.insert(0, {
+                    'trade_id': trade_id,
+                    'timestamp': trade_data.get('timestamp', datetime.now().isoformat()),
+                    'status': 'running',
+                    'direction': trade_data.get('direction', 'MULTUP'),
+                    'multiplier': trade_data.get('multiplier', 0),
+                    'contract_id': trade_data.get('contract_id', ''),
+                    'app_id': trade_data.get('app_id', ''),
+                    'parameters': trade_data.get('parameters', {}),
+                    'profit': 0,
+                    'success': 0
+                })
+    
+    return jsonify(db_trades)
 
 @app.route('/session', methods=['GET'])
 def get_session():
