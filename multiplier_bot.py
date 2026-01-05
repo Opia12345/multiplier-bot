@@ -576,15 +576,13 @@ class DerivMultiplierBot:
                 "ticks_history": self.symbol,
                 "count": count,
                 "end": "latest",
-                "style": "ticks",
-                "granularity": 1,
+                "style": "ticks",  # Raw ticks - no granularity!
                 "req_id": self.get_next_request_id()
             }
             
             trade_logger.info(f"Fetching {count} ticks for {self.symbol}...")
             await self.ws.send(json.dumps(ticks_request))
             
-            # Add explicit timeout
             response_text = await asyncio.wait_for(self.ws.recv(), timeout=15.0)
             response = json.loads(response_text)
             
@@ -592,12 +590,12 @@ class DerivMultiplierBot:
                 trade_logger.error(f"Tick history error: {response['error']['message']}")
                 return []
                 
-            if "history" not in response or not response["history"]["prices"]:
+            if "history" not in response or not response["history"].get("prices"):
                 trade_logger.warning("No tick history received")
                 return []
                 
             prices = [float(p) for p in response["history"]["prices"]]
-            trade_logger.info(f"Fetched {len(prices)} ticks successfully")
+            trade_logger.info(f"Successfully fetched {len(prices)} ticks")
             return prices
             
         except asyncio.TimeoutError:
@@ -605,7 +603,7 @@ class DerivMultiplierBot:
             return []
         except Exception as e:
             trade_logger.error(f"Tick fetch failed: {e}")
-            return []
+            return []    
     async def analyze_market(self):
         prices = await self.fetch_ticks(200)
         if len(prices) < 50:
