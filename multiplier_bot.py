@@ -577,20 +577,40 @@ class DerivMultiplierBot:
                 "count": count,
                 "end": "latest",
                 "style": "ticks",
+                "granularity": 1,
                 "req_id": self.get_next_request_id()
             }
-            response = await self.send_request(ticks_request)
-            if "history" in response and "prices" in response["history"]:
-                prices = [float(p) for p in response["history"]["prices"]]
-                return prices
+            
+            trade_logger.info(f"Fetching {count} ticks for {self.symbol}...")
+            await self.ws.send(json.dumps(ticks_request))
+            
+            # Add explicit timeout
+            response_text = await asyncio.wait_for(self.ws.recv(), timeout=15.0)
+            response = json.loads(response_text)
+            
+            if "error" in response:
+                trade_logger.error(f"Tick history error: {response['error']['message']}")
+                return []
+                
+            if "history" not in response or not response["history"]["prices"]:
+                trade_logger.warning("No tick history received")
+                return []
+                
+            prices = [float(p) for p in response["history"]["prices"]]
+            trade_logger.info(f"Fetched {len(prices)} ticks successfully")
+            return prices
+            
+        except asyncio.TimeoutError:
+            trade_logger.error("Tick history request timed out")
+            return []
         except Exception as e:
             trade_logger.error(f"Tick fetch failed: {e}")
-        return []
-
+            return []
     async def analyze_market(self):
         prices = await self.fetch_ticks(200)
         if len(prices) < 50:
-            return None, 0, 0, 0, False, 0, 0
+            trade_logger.warning(f"Insufficient data ({len(prices)} ticks) - retrying later")
+            return None, 0, {}, 0, False, 0, 0
         
         self.price_history.extend(prices)
         
@@ -653,6 +673,7 @@ class DerivMultiplierBot:
         return round(stake, 2)
 
     async def wait_for_entry_signal(self, max_wait_time=45):
+        trade_logger.info("Starting entry signal search...")
         start_time = datetime.now()
         fallback_triggered = False
         
