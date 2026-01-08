@@ -272,7 +272,7 @@ except Exception as e:
     logger.error(f"Database initialization error: {e}")
 
 trade_results = {}
-MAX_CONCURRENT_TRADES = 100
+MAX_CONCURRENT_TRADES = 10
 active_trades_lock = Lock()
 active_trade_count = 0
 
