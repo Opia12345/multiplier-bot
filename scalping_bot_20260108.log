@@ -1,0 +1,72 @@
+2026-01-08 22:43:16,011 - ERROR - MT5 initialization failed: (-10003, 'IPC initialize failed, MetaTrader 5 x64 not found')
+2026-01-08 22:53:34,071 - INFO - Balance: $500.00 | Equity: $500.00
+2026-01-08 22:53:34,071 - INFO - Broker: Exness Technologies Ltd | Leverage: 1:2000
+2026-01-08 22:53:34,071 - INFO - 
+====================================================================================================
+2026-01-08 22:53:34,074 - INFO - ====================================================================================================
+2026-01-08 22:53:34,074 - INFO - Symbols: XAUUSD, BTCUSD
+2026-01-08 22:53:34,075 - INFO - Max Positions: 6 | Risk/Trade: 0.5%
+2026-01-08 22:53:34,075 - INFO - Max Daily Loss: $50 | Max Drawdown: 15%
+2026-01-08 22:53:34,075 - INFO - Trading Hours: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+2026-01-08 22:53:34,076 - INFO - ====================================================================================================
+
+2026-01-08 22:53:34,076 - WARNING - Symbol XAUUSD not found
+2026-01-08 22:53:34,077 - WARNING - Symbol BTCUSD not found
+2026-01-08 22:53:37,078 - WARNING - Symbol XAUUSD not found
+2026-01-08 22:53:37,079 - WARNING - Symbol BTCUSD not found
+2026-01-08 22:53:40,080 - WARNING - Symbol XAUUSD not found
+2026-01-08 22:53:40,080 - WARNING - Symbol BTCUSD not found
+2026-01-08 22:53:43,082 - WARNING - Symbol XAUUSD not found
+2026-01-08 22:53:43,083 - WARNING - Symbol BTCUSD not found
+2026-01-08 22:53:46,084 - WARNING - Symbol XAUUSD not found
+2026-01-08 22:53:46,085 - WARNING - Symbol BTCUSD not found
+2026-01-08 22:55:24,648 - INFO - Balance: $500.00 | Equity: $500.00
+2026-01-08 22:55:24,649 - INFO - Broker: Exness Technologies Ltd | Leverage: 1:2000
+2026-01-08 22:55:24,649 - INFO - 
+====================================================================================================
+2026-01-08 22:55:24,651 - INFO - ====================================================================================================
+2026-01-08 22:55:24,651 - INFO - Symbols: XAUUSDm, BTCUSDm
+2026-01-08 22:55:24,652 - INFO - Max Positions: 6 | Risk/Trade: 0.5%
+2026-01-08 22:55:24,652 - INFO - Max Daily Loss: $50 | Max Drawdown: 15%
+2026-01-08 22:55:24,652 - INFO - Trading Hours: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+2026-01-08 22:55:24,652 - INFO - ====================================================================================================
+
+2026-01-08 22:57:04,576 - INFO - Balance: $500.00 | Equity: $500.00
+2026-01-08 22:57:04,576 - INFO - Broker: Exness Technologies Ltd | Leverage: 1:2000
+2026-01-08 22:57:04,576 - INFO - 
+====================================================================================================
+2026-01-08 22:57:04,581 - INFO - ====================================================================================================
+2026-01-08 22:57:04,582 - INFO - Symbols: XAUUSDm, BTCUSDm
+2026-01-08 22:57:04,582 - INFO - Max Positions: 6 | Risk/Trade: 0.5%
+2026-01-08 22:57:04,582 - INFO - Max Daily Loss: $50 | Max Drawdown: 15%
+2026-01-08 22:57:04,583 - INFO - Trading Hours: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+2026-01-08 22:57:04,583 - INFO - ====================================================================================================
+
+2026-01-08 23:11:51,521 - INFO - Balance: $500.00 | Equity: $500.00
+2026-01-08 23:11:51,521 - INFO - Broker: Exness Technologies Ltd | Leverage: 1:2000
+2026-01-08 23:11:51,521 - INFO - 
+====================================================================================================
+2026-01-08 23:11:51,524 - INFO - ====================================================================================================
+2026-01-08 23:12:48,919 - INFO - XAUUSDm: Rejected - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:13:22,185 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:13:25,717 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:13:29,243 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:13:32,790 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:13:36,337 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:13:39,871 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:13:43,412 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:13:46,953 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:13:53,505 - INFO - XAUUSDm: Rejected - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:13:56,588 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:00,130 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:33,989 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:37,515 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:41,039 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:44,561 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:48,082 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:51,602 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:55,123 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:14:58,631 - INFO - XAUUSDm: Rejected - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:14:58,651 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
+2026-01-08 23:15:59,941 - INFO - XAUUSDm: Rejected - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:16:36,687 - INFO - [OPEN] LONG BTCUSDm | Lot: 0.03 | Price: 91321.64000 | SL: 91241.64000 (80.0p) | TP: 91471.64000 (150.0p) | RR: 1.88
