@@ -64,7 +64,7 @@ class MT5ScalpingBot:
         # Spread history (in pips)
         self.spread_history = {symbol: [] for symbol in config['symbols']}
         
-        # Symbol-specific points per pip (Exness-specific tuning)
+        # Symbol-specific points per pip (Exness tuning)
         self.points_per_pip = config.get('points_per_pip', {'default': 10})
         
         # Initialize MT5
@@ -140,7 +140,7 @@ class MT5ScalpingBot:
         return atr
     
     def calculate_volatility(self, symbol: str) -> float:
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 20)
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 30)
         if rates is None or len(rates) < 20:
             return 0.0
         
@@ -154,7 +154,7 @@ class MT5ScalpingBot:
         volatility = self.calculate_volatility(symbol)
         atr = self.calculate_atr(symbol)
         
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 50)
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 60)
         if rates is None or len(rates) < 50:
             return MarketCondition(symbol=symbol, spread=spread, volatility=volatility, atr=atr,
                                   trend_strength=0.0, is_tradeable=False, rejection_reason="Insufficient data")
@@ -164,12 +164,13 @@ class MT5ScalpingBot:
         df['ema21'] = df['close'].ewm(span=21).mean()
         df['ema50'] = df['close'].ewm(span=50).mean()
         
+        # Require strict full alignment for tradeable
         if df['ema8'].iloc[-1] > df['ema21'].iloc[-1] > df['ema50'].iloc[-1]:
             trend_score = 1.0
         elif df['ema8'].iloc[-1] < df['ema21'].iloc[-1] < df['ema50'].iloc[-1]:
             trend_score = -1.0
         else:
-            trend_score = (df['ema8'].iloc[-1] - df['ema50'].iloc[-1]) / df['ema50'].iloc[-1] if df['ema50'].iloc[-1] != 0 else 0
+            trend_score = 0.0
         
         avg_spread = self.get_average_spread(symbol)
         max_acceptable_spread = self.config['max_spread_multiplier'] * (avg_spread if avg_spread > 0 else 20)
@@ -177,7 +178,7 @@ class MT5ScalpingBot:
         if spread > max_acceptable_spread or spread > self.config['max_spread_pips']:
             return MarketCondition(symbol=symbol, spread=spread, volatility=volatility, atr=atr,
                                   trend_strength=trend_score, is_tradeable=False,
-                                  rejection_reason=f"Spread too high: {spread:.1f}p (max {max_acceptable_spread:.1f})")
+                                  rejection_reason=f"Spread too high: {spread:.1f}p")
         
         if volatility < self.config['min_volatility']:
             return MarketCondition(symbol=symbol, spread=spread, volatility=volatility, atr=atr,
@@ -189,17 +190,10 @@ class MT5ScalpingBot:
                                   trend_strength=trend_score, is_tradeable=False,
                                   rejection_reason=f"Volatility too high: {volatility:.4f}%")
         
-        if self.config.get('enable_time_filter', False):
-            current_hour = datetime.now().hour
-            if current_hour not in self.config['trading_hours']:
-                return MarketCondition(symbol=symbol, spread=spread, volatility=volatility, atr=atr,
-                                      trend_strength=trend_score, is_tradeable=False,
-                                      rejection_reason=f"Outside trading hours: {current_hour}:00")
-        
-        if abs(trend_score) < self.config['min_trend_strength']:
+        if abs(trend_score) < 1.0:
             return MarketCondition(symbol=symbol, spread=spread, volatility=volatility, atr=atr,
                                   trend_strength=trend_score, is_tradeable=False,
-                                  rejection_reason=f"Weak trend: {abs(trend_score):.3f}")
+                                  rejection_reason="Weak or no trend alignment")
         
         return MarketCondition(symbol=symbol, spread=spread, volatility=volatility, atr=atr,
                               trend_strength=trend_score, is_tradeable=True)
@@ -232,7 +226,7 @@ class MT5ScalpingBot:
         df['macd_hist'] = df['macd'] - df['macd_signal']
         
         df['volume_ma'] = df['tick_volume'].rolling(window=20).mean()
-        volume_confirmation = df['tick_volume'].iloc[-1] > df['volume_ma'].iloc[-1] * 1.2
+        volume_confirmation = df['tick_volume'].iloc[-1] > df['volume_ma'].iloc[-1] * 1.5
         
         current_price = df['close'].iloc[-1]
         rsi = df['rsi'].iloc[-1]
@@ -240,20 +234,20 @@ class MT5ScalpingBot:
         macd_hist_prev = df['macd_hist'].iloc[-2]
         
         long_signal = (
-            df['ema8'].iloc[-1] > df['ema21'].iloc[-1] > df['ema50'].iloc[-1] and
-            market_condition.trend_strength > self.config['min_trend_strength'] and
-            40 < rsi < 70 and
+            market_condition.trend_strength == 1.0 and
+            current_price > df['ema8'].iloc[-1] and
+            current_price > df['bb_middle'].iloc[-1] and
+            rsi > 50 and rsi < 70 and
             macd_hist > 0 and macd_hist > macd_hist_prev and
-            current_price > df['bb_lower'].iloc[-1] and
             volume_confirmation
         )
         
         short_signal = (
-            df['ema8'].iloc[-1] < df['ema21'].iloc[-1] < df['ema50'].iloc[-1] and
-            market_condition.trend_strength < -self.config['min_trend_strength'] and
-            30 < rsi < 60 and
+            market_condition.trend_strength == -1.0 and
+            current_price < df['ema8'].iloc[-1] and
+            current_price < df['bb_middle'].iloc[-1] and
+            rsi < 50 and rsi > 30 and
             macd_hist < 0 and macd_hist < macd_hist_prev and
-            current_price < df['bb_upper'].iloc[-1] and
             volume_confirmation
         )
         
@@ -267,10 +261,12 @@ class MT5ScalpingBot:
         ppp = self.get_points_per_pip(symbol)
         atr_pips = market_condition.atr / symbol_info.point / ppp
         
-        trend_multiplier = min(3.0, 1.5 + abs(market_condition.trend_strength))
-        tp_pips = max(self.config['min_tp_pips'], min(self.config['max_tp_pips'], atr_pips * trend_multiplier))
+        abs_trend = abs(market_condition.trend_strength)
         
-        sl_multiplier = 1.5 - (abs(market_condition.trend_strength) * 0.5)
+        tp_multiplier = 1.2 + abs_trend * 0.5
+        sl_multiplier = 2.5 + abs_trend * 0.8
+        
+        tp_pips = max(self.config['min_tp_pips'], min(self.config['max_tp_pips'], atr_pips * tp_multiplier))
         sl_pips = max(self.config['min_sl_pips'], min(self.config['max_sl_pips'], atr_pips * sl_multiplier))
         
         if tp_pips / sl_pips < self.config['min_risk_reward']:
@@ -379,7 +375,6 @@ class MT5ScalpingBot:
         
         mt5_tickets = {pos.ticket for pos in mt5_positions}
         
-        # Detect closed positions
         closed = [pos for pos in self.positions if pos.ticket not in mt5_tickets]
         for pos in closed:
             deals = mt5.history_deals_get(position=pos.ticket)
@@ -395,7 +390,6 @@ class MT5ScalpingBot:
             logging.info(f"[CLOSE-{outcome}] {pos.instrument} #{pos.ticket} | P&L: ${profit:+.2f} | Dur: {duration:.1f}min")
             self.positions.remove(pos)
         
-        # Update open positions
         for pos in self.positions:
             for mt5_pos in mt5_positions:
                 if mt5_pos.ticket == pos.ticket:
@@ -517,7 +511,7 @@ class MT5ScalpingBot:
         mt5.shutdown()
         logging.info("Shutdown complete")
 
-# ============= CONFIGURATION (HARDCODED) =============
+# ============= CONFIGURATION (OPTIMIZED FOR HIGH WIN RATE) =============
 config = {
     'account': 297846595,
     'password': 'Killindem22.',
@@ -525,56 +519,52 @@ config = {
     
     'symbols': ['XAUUSDm', 'BTCUSDm'],
     
-    'max_positions': 6,
-    'max_positions_per_symbol': 2,
+    'max_positions': 4,
+    'max_positions_per_symbol': 1,
     'magic_number': 234567,
     
-    'risk_percent': 0.5,
+    'risk_percent': 0.3,
     'min_lot': 0.01,
-    'max_lot': 0.1,
-    'min_risk_reward': 1.8,
+    'max_lot': 0.05,
+    'min_risk_reward': 0.5,
     
-    'min_tp_pips': 30,
-    'max_tp_pips': 150,
-    'min_sl_pips': 15,
-    'max_sl_pips': 80,
+    'min_tp_pips': 15,
+    'max_tp_pips': 60,
+    'min_sl_pips': 35,
+    'max_sl_pips': 120,
     
-    'max_spread_pips': 30,
-    'max_spread_multiplier': 1.8,
+    'max_spread_pips': 25,
+    'max_spread_multiplier': 1.5,
     
-    'min_volatility': 0.02,
-    'max_volatility': 0.5,
-    'min_trend_strength': 0.15,
+    'min_volatility': 0.05,
+    'max_volatility': 0.4,
     
     'enable_time_filter': False,
-    'trading_hours': list(range(24)),
     
-    'max_daily_trades': 20,
-    'max_daily_loss': 50,
+    'max_daily_trades': 10,
+    'max_daily_loss': 30,
     'daily_profit_target': None,
     
     'min_equity': 100,
-    'max_drawdown_percent': 15,
+    'max_drawdown_percent': 10,
     'max_slippage_points': 30,
     
-    'sleep_interval': 3,
+    'sleep_interval': 4,
     
-    # Exness-specific pip definitions
     'points_per_pip': {
         'default': 10,
-        'XAUUSDm': 1,    # Gold: 1 pip = 0.01 price move
-        'BTCUSDm': 100   # BTC: 1 pip ≈ $1 move
+        'XAUUSDm': 1,
+        'BTCUSDm': 10
     },
 }
 
 # ============= RUN BOT =============
 if __name__ == "__main__":
     print("="*100)
-    print("EXNESS MT5 SCALPING BOT - REAL/DEMO ACCOUNT")
+    print("EXNESS MT5 SCALPING BOT - OPTIMIZED FOR HIGH WIN RATE")
     print("="*100)
     print("WARNING: This will trade on your Exness account!")
-    print("Symbols: XAUUSDm (Gold) & BTCUSDm (Bitcoin)")
-    print("Pip definitions tuned for Exness specifications")
+    print("Fewer, higher-quality trades with small TP and wide SL")
     
     response = input("\nType 'START' to launch: ").strip().upper()
     if response == 'START':
@@ -583,3 +573,5 @@ if __name__ == "__main__":
         bot.run()
     else:
         print("Bot not started.")
+        
+        # buy the dip, sell the peak

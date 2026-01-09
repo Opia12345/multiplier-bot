@@ -70,3 +70,41 @@
 2026-01-08 23:14:58,651 - WARNING - Order failed BTCUSDm LONG: 10027 - AutoTrading disabled by client
 2026-01-08 23:15:59,941 - INFO - XAUUSDm: Rejected - Spread too high: 160.0p (max 288.0)
 2026-01-08 23:16:36,687 - INFO - [OPEN] LONG BTCUSDm | Lot: 0.03 | Price: 91321.64000 | SL: 91241.64000 (80.0p) | TP: 91471.64000 (150.0p) | RR: 1.88
+2026-01-08 23:16:46,485 - INFO - Connected to MT5 Account: 297846595
+2026-01-08 23:16:46,485 - INFO - Balance: $500.00 | Equity: $498.97
+2026-01-08 23:16:46,486 - INFO - Broker: Exness Technologies Ltd | Leverage: 1:2000
+2026-01-08 23:16:46,486 - INFO - 
+====================================================================================================
+2026-01-08 23:16:46,487 - INFO - SCALPING BOT STARTED - EXNESS ACCOUNT
+2026-01-08 23:16:46,487 - INFO - ====================================================================================================
+2026-01-08 23:16:47,270 - INFO - [OPEN] LONG BTCUSDm | Lot: 0.03 | Price: 91305.19000 | SL: 91225.19000 (80.0p) | TP: 91455.19000 (150.0p) | RR: 1.88
+2026-01-08 23:16:54,119 - INFO - [OPEN] LONG BTCUSDm | Lot: 0.03 | Price: 91301.73000 | SL: 91221.73000 (80.0p) | TP: 91451.73000 (150.0p) | RR: 1.88
+2026-01-08 23:17:45,846 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:18:46,050 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:19:46,204 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:20:46,381 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:21:43,579 - INFO - [CLOSE-LOSS] BTCUSDm #2164485683 | P&L: $-2.40 | Dur: 4.9min
+2026-01-08 23:21:46,634 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:21:46,644 - INFO - BTCUSDm: TRADEABLE | Spread: 18.0p | Trend: 1.000
+2026-01-08 23:21:52,701 - INFO - [CLOSE-LOSS] BTCUSDm #2164485856 | P&L: $-2.67 | Dur: 5.0min
+2026-01-08 23:22:47,377 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:22:47,391 - INFO - BTCUSDm: TRADEABLE | Spread: 18.0p | Trend: 1.000
+2026-01-08 23:23:48,061 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:23:48,075 - INFO - BTCUSDm: TRADEABLE | Spread: 18.0p | Trend: 1.000
+2026-01-08 23:24:48,872 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p (max 288.0)
+2026-01-08 23:24:48,880 - INFO - BTCUSDm: TRADEABLE | Spread: 18.0p | Trend: 1.000
+2026-01-08 23:25:41,157 - INFO - 
+Stopped by user
+2026-01-08 23:25:41,160 - INFO - Shutdown complete
+2026-01-08 23:25:49,858 - INFO - Connected to MT5 Account: 297846595
+2026-01-08 23:25:49,859 - INFO - Balance: $492.30 | Equity: $492.30
+2026-01-08 23:25:49,859 - INFO - Broker: Exness Technologies Ltd | Leverage: 1:2000
+2026-01-08 23:25:49,859 - INFO - 
+====================================================================================================
+2026-01-08 23:25:49,859 - INFO - SCALPING BOT STARTED - EXNESS ACCOUNT
+2026-01-08 23:25:49,860 - INFO - ====================================================================================================
+2026-01-08 23:27:06,176 - INFO - XAUUSDm: REJECTED - Spread too high: 160.0p
+2026-01-08 23:27:06,182 - INFO - BTCUSDm: REJECTED - Spread too high: 180.0p
+2026-01-08 23:28:19,200 - INFO - 
+Stopped by user
+2026-01-08 23:28:19,201 - INFO - Shutdown complete
